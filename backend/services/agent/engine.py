@@ -322,6 +322,7 @@ class ReActEngine:
                 "project_id": project_id,
                 "steps": [],
                 "final_answer": f"执行失败: {e}",
+                "chat_summary": f"执行失败: {e}",
             }
 
         # 4. 条件步骤处理（如果 plan 中有 condition 步骤）
@@ -337,6 +338,7 @@ class ReActEngine:
             "type": "action",
             "steps": thought_steps,
             "final_answer": report.get("final_answer", ""),
+            "chat_summary": report.get("chat_summary", ""),
             "action_cards": action_cards,
             "autonomous": True,
             "plan_summary": plan.get("summary", ""),
@@ -396,11 +398,21 @@ class ReActEngine:
         # 合并所有结果
         combined_answer = self._merge_multi_intent_results(all_results)
         
+        # 生成聊天摘要（多意图场景）
+        chat_summary = combined_answer
+        if len(combined_answer) > 200:
+            lines = [l.strip() for l in combined_answer.strip().split('\n') if l.strip()]
+            if lines:
+                chat_summary = f"{lines[0]} ... 多个任务执行完成，详见下方报告。"
+            else:
+                chat_summary = "多个任务执行完成，详见下方报告。"
+        
         return {
             "success": any(r.get("success", False) for r in all_results),
             "type": "multi_action",
             "steps": all_steps,
             "final_answer": combined_answer,
+            "chat_summary": chat_summary,
             "action_cards": [],
             "autonomous": True,
             "sub_results": all_results,

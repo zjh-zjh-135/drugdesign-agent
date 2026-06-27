@@ -338,7 +338,7 @@ export default function HelpChatModal({ onClose, projectId }) {
           if (isAutonomous) {
             setMessages((prev) => [...prev, {
               role: 'assistant',
-              content: data.final_answer || '任务执行完成',
+              content: data.chat_summary || data.final_answer || '任务执行完成',
               source: 'copilot',
               steps: data.steps || [],
               type: 'autonomous',
@@ -348,7 +348,7 @@ export default function HelpChatModal({ onClose, projectId }) {
           } else {
             setMessages((prev) => [...prev, {
               role: 'assistant',
-              content: data.final_answer || '操作已识别',
+              content: data.chat_summary || data.final_answer || '操作已识别',
               source: 'copilot',
               steps: data.steps || [],
               type: data.type,
@@ -598,7 +598,7 @@ export default function HelpChatModal({ onClose, projectId }) {
         setMessages((prev) => prev.filter(m => !m.agent_working))
         setMessages((prev) => [...prev, {
           role: 'assistant',
-          content: data.final_answer || '任务执行完成',
+          content: data.chat_summary || data.final_answer || '任务执行完成',
           source: 'copilot',
           steps: data.steps || [],
           type: 'autonomous',
