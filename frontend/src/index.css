@@ -1,0 +1,179 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer components {
+  .btn-action {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    padding: 0.65em 1.8em;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 2.5px;
+    font-weight: 500;
+    color: #000;
+    background-color: #fff;
+    border: 1px solid #e2e8f0;
+    border-radius: 45px;
+    box-shadow: 0px 4px 10px rgba(0, 0, 0, 0.08);
+    transition: all 0.3s ease 0s;
+    cursor: pointer;
+    outline: none;
+    line-height: 1.4;
+    white-space: nowrap;
+  }
+
+  .btn-action:hover:not(:disabled) {
+    background-color: #23c483;
+    box-shadow: 0px 10px 18px rgba(46, 229, 157, 0.35);
+    color: #fff;
+    border-color: #23c483;
+    transform: translateY(-4px);
+  }
+
+  .btn-action:active:not(:disabled) {
+    transform: translateY(-1px);
+  }
+
+  .btn-neumorphism {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: #090909;
+    padding: 0.7em 1.7em;
+    font-size: 14px;
+    border-radius: 0.5em;
+    background: #ffffff;
+    cursor: pointer;
+    border: 1px solid #ffffff;
+    transition: all 0.3s;
+    box-shadow: 6px 6px 12px #c5c5c5, -6px -6px 12px #ffffff;
+    font-weight: 500;
+    white-space: nowrap;
+  }
+
+  .btn-neumorphism:active {
+    color: #666;
+    box-shadow: inset 4px 4px 12px #c5c5c5, inset -4px -4px 12px #ffffff;
+  }
+
+  /* Tooltip button - From Uiverse.io by satyamchaudharydev */
+  .btn-tooltip {
+    --width: 100px;
+    --height: 35px;
+    --tooltip-height: 35px;
+    --tooltip-width: 90px;
+    --gap-between-tooltip-to-button: 18px;
+    --button-color: #1163ff;
+    --tooltip-color: #fff;
+    width: var(--width);
+    height: var(--height);
+    background: var(--button-color);
+    position: relative;
+    text-align: center;
+    border-radius: 0.45em;
+    font-family: "Arial";
+    transition: background 0.3s;
+    cursor: pointer;
+    user-select: none;
+    flex-shrink: 0;
+  }
+
+  .btn-tooltip::before {
+    position: absolute;
+    content: attr(data-tooltip);
+    width: var(--tooltip-width);
+    height: var(--tooltip-height);
+    background-color: var(--tooltip-color);
+    font-size: 0.9rem;
+    color: #111;
+    border-radius: .25em;
+    line-height: var(--tooltip-height);
+    bottom: calc(var(--height) + var(--gap-between-tooltip-to-button) + 10px);
+    left: calc(50% - var(--tooltip-width) / 2);
+    pointer-events: none;
+  }
+
+  .btn-tooltip::after {
+    position: absolute;
+    content: '';
+    width: 0;
+    height: 0;
+    border: 10px solid transparent;
+    border-top-color: var(--tooltip-color);
+    left: calc(50% - 10px);
+    bottom: calc(100% + var(--gap-between-tooltip-to-button) - 10px);
+    pointer-events: none;
+  }
+
+  .btn-tooltip::after, .btn-tooltip::before {
+    opacity: 0;
+    visibility: hidden;
+    transition: all 0.5s;
+  }
+
+  .btn-tooltip-wrapper, .btn-tooltip-text, .btn-tooltip-icon {
+    overflow: hidden;
+    position: absolute;
+    width: 100%;
+    height: 100%;
+    left: 0;
+    color: #fff;
+  }
+
+  .btn-tooltip-text {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    top: 0;
+  }
+
+  .btn-tooltip-text, .btn-tooltip-icon {
+    transition: top 0.5s;
+  }
+
+  .btn-tooltip-icon {
+    color: #fff;
+    top: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .btn-tooltip-icon svg {
+    width: 20px;
+    height: 20px;
+  }
+
+  .btn-tooltip:hover {
+    background: #6c18ff;
+  }
+
+  .btn-tooltip:hover .btn-tooltip-text {
+    top: -100%;
+  }
+
+  .btn-tooltip:hover .btn-tooltip-icon {
+    top: 0;
+  }
+
+  .btn-tooltip:hover::before, .btn-tooltip:hover::after {
+    opacity: 1;
+    visibility: visible;
+  }
+
+  .btn-tooltip:hover::after {
+    bottom: calc(var(--height) + var(--gap-between-tooltip-to-button) - 20px);
+  }
+
+  .btn-tooltip:hover::before {
+    bottom: calc(var(--height) + var(--gap-between-tooltip-to-button));
+  }
+
+  .btn-tooltip.disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+}

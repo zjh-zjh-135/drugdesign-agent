@@ -1,0 +1,64 @@
+# Dependencies
+frontend/node_modules/
+backend/env/
+backend/venv/
+backend/.venv/
+__pycache__/
+backend/**/__pycache__/
+backend/**/**/__pycache__/
+backend/**/**/**/__pycache__/
+*.egg-info/
+dist/
+build/
+
+# Database (contains data, large file, should not be shared)
+backend/drugdesign.db
+backend/chembl33_sa2_f5.db
+backend/*.db
+backend/*.sqlite
+backend/*.sqlite3
+
+# Environment variables (contains secrets!)
+.env
+
+# Logs
+backend.log
+*.log
+logs/
+
+# Build outputs
+frontend/dist/
+frontend/dist-ssr/
+*.local
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Coverage / test
+.coverage
+htmlcov/
+.pytest_cache/
+.tox/
+
+# Temporary files
+*.tmp
+*.bak
+*.orig
+
+# Large binary files that should be LFS or excluded
+*.pkl
+*.joblib
+*.h5
+*.pth
+*.pt
+*.onnx
+
+# Note: .env.example is intentionally NOT ignored - it serves as a template
