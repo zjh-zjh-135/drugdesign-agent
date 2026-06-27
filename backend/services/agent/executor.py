@@ -231,6 +231,40 @@ class TaskExecutor:
             print(f"[ActionGenerator Error] {e}")
             frontend_actions = []
         
+        # 构建 steps 报告：如果 final_answer 已被强制格式化，steps 的 observation 简化为摘要，避免重复
+        steps_report = []
+        for s in log.steps:
+            step_dict = {
+                "step_number": s.step_number,
+                "tool": s.tool,
+                "params": s.params if isinstance(s.params, dict) else {},
+                "reason": s.reason,
+                "status": s.status,
+                "error": s.error,
+                "started_at": s.started_at.isoformat(),
+                "finished_at": s.finished_at.isoformat() if s.finished_at else None,
+                "llm_decision": s.llm_decision,
+                "llm_thought": s.llm_thought,
+            }
+            
+            # 如果最终答案已被强制格式化，steps 的 observation 简化为摘要，避免重复显示
+            if enriched_answer and s.observation:
+                step_dict["observation"] = f"已执行 {s.tool}，详细结果见下方报告"
+            else:
+                step_dict["observation"] = self._serialize_obs(s.observation)
+            
+            steps_report.append(step_dict)
+        
+        # 生成聊天摘要：如果 final_answer 很长，提取第一行作为摘要
+        chat_summary = log.final_answer
+        if len(log.final_answer) > 200:
+            # 提取第一行非空内容作为摘要
+            lines = [l.strip() for l in log.final_answer.strip().split('\n') if l.strip()]
+            if lines:
+                chat_summary = f"{lines[0]} ... 执行完成，详见下方报告。"
+            else:
+                chat_summary = "执行完成，详见下方报告。"
+
         return {
             "success": log.success,
             "goal": log.goal,
@@ -238,23 +272,9 @@ class TaskExecutor:
             "started_at": log.started_at.isoformat(),
             "finished_at": log.finished_at.isoformat() if log.finished_at else None,
             "total_steps": len(log.steps),
-            "steps": [
-                {
-                    "step_number": s.step_number,
-                    "tool": s.tool,
-                    "params": s.params if isinstance(s.params, dict) else {},
-                    "reason": s.reason,
-                    "status": s.status,
-                    "error": s.error,
-                    "observation": self._serialize_obs(s.observation),
-                    "started_at": s.started_at.isoformat(),
-                    "finished_at": s.finished_at.isoformat() if s.finished_at else None,
-                    "llm_decision": s.llm_decision,
-                    "llm_thought": s.llm_thought,
-                }
-                for s in log.steps
-            ],
+            "steps": steps_report,
             "final_answer": log.final_answer,
+            "chat_summary": chat_summary,
             "actions": [a.to_dict() for a in frontend_actions],
         }
 
@@ -688,11 +708,16 @@ class TaskExecutor:
         tool = last_success_step.tool
         
         # 如果 LLM 已经提到了分子名称/ID，说明它已经包含了数据
+        # 但对于特定工具，我们强制使用专业格式化，覆盖 LLM 的简陋排版
         if log.final_answer and isinstance(log.final_answer, str):
+            # 单分子 ADMET 分析：不管 LLM 是否已经包含数据，强制使用专业格式化
+            if tool == "analyze_single_molecule_admet":
+                return self._format_single_molecule_admet(obs)
+            
             # 简单启发：检查是否包含 SMILES 或分子ID
             has_molecule_data = any(
                 keyword in log.final_answer.lower()
-                for keyword in ["smiles", "molecule", "分子", "编号", "对接分数", "admet"]
+                for keyword in ["molecule", "编号", "对接分数"]
             )
             if has_molecule_data:
                 return ""
@@ -706,6 +731,18 @@ class TaskExecutor:
             return self._format_create_project(obs)
         elif tool == "wait_for_pipeline":
             return self._format_pipeline_result(obs)
+        elif tool == "analyze_failures":
+            return self._format_analyze_failures(obs)
+        elif tool == "get_failed_molecules":
+            return self._format_analyze_failures(obs)
+        elif tool == "compare_molecules":
+            return self._format_compare_molecules(obs)
+        elif tool == "suggest_next_step":
+            return self._format_suggest_next_step(obs)
+        elif tool == "get_pipeline_progress":
+            return self._format_pipeline_progress(obs)
+        elif tool == "analyze_single_molecule_admet":
+            return self._format_single_molecule_admet(obs)
         
         return ""
     
@@ -789,5 +826,266 @@ class TaskExecutor:
         summary = obs.get("summary")
         if summary:
             lines.append(f"\n{summary}")
+        
+        return "\n".join(lines)
+    
+    def _format_analyze_failures(self, obs: Dict) -> str:
+        """格式化失败分子分析结果"""
+        if not obs.get("success") and obs.get("total_failed") is None:
+            return ""
+        
+        total = obs.get("total_failed", 0)
+        lines = ["\n\n**失败分子分析报告**", ""]
+        
+        if total == 0:
+            lines.append("✅ 当前没有失败分子记录。所有分子均通过了各阶段筛选。")
+            return "\n".join(lines)
+        
+        lines.append(f"共发现 **{total}** 个失败分子\n")
+        
+        # 按阶段统计
+        stage_counts = obs.get("stage_counts", {})
+        if stage_counts:
+            lines.append("**失败阶段分布**")
+            lines.append("| 失败阶段 | 数量 | 占比 |")
+            lines.append("|----------|------|------|")
+            stage_names = {
+                "filtering": "结构初筛",
+                "structure_screening": "结构筛选",
+                "admet": "ADMET 评估",
+                "refinement": "FEP 精修",
+                "synthesis": "合成评估",
+                "unknown": "未分类",
+            }
+            for stage, count in sorted(stage_counts.items(), key=lambda x: x[1], reverse=True):
+                name = stage_names.get(stage, stage)
+                pct = count / total * 100 if total > 0 else 0
+                lines.append(f"| {name} | {count} | {pct:.1f}% |")
+            lines.append("")
+        
+        # 失败原因统计
+        reasons = obs.get("reasons", {})
+        if reasons:
+            lines.append("**主要失败原因**")
+            lines.append("| 失败原因 | 次数 | 占比 |")
+            lines.append("|----------|------|------|")
+            for reason, count in sorted(reasons.items(), key=lambda x: x[1], reverse=True)[:5]:
+                pct = count / total * 100 if total > 0 else 0
+                lines.append(f"| {reason} | {count} | {pct:.1f}% |")
+            lines.append("")
+        
+        # 优化建议
+        suggestions = obs.get("suggestions", [])
+        if suggestions:
+            lines.append("**💡 优化建议**")
+            for i, sug in enumerate(suggestions, 1):
+                lines.append(f"{i}. {sug}")
+            lines.append("")
+        
+        return "\n".join(lines)
+    
+    def _format_compare_molecules(self, obs: Dict) -> str:
+        """格式化分子对比结果"""
+        if not obs.get("success"):
+            return ""
+        
+        molecules = obs.get("molecules", [])
+        if not molecules:
+            return "\n\n**分子对比**：暂无对比数据。"
+        
+        lines = ["\n\n**分子对比报告**", ""]
+        lines.append("| 分子ID | MW | LogP | hERG | QED | 对接分数 | ADMET | 合成难度 |")
+        lines.append("|--------|------|------|------|-----|----------|-------|----------|")
+        
+        for mol in molecules:
+            lines.append(
+                f"| {mol.get('id', 'N/A')} | "
+                f"{mol.get('mw', 'N/A')} | "
+                f"{mol.get('logp', 'N/A')} | "
+                f"{mol.get('herg', 'N/A')} | "
+                f"{mol.get('qed', 'N/A')} | "
+                f"{mol.get('docking_score', 'N/A')} | "
+                f"{mol.get('admet_score', 'N/A')} | "
+                f"{mol.get('sa_score', 'N/A')} |"
+            )
+        
+        recommendation = obs.get("recommendation")
+        if recommendation:
+            lines.append(f"\n**推荐**: {recommendation}")
+        
+        return "\n".join(lines)
+    
+    def _format_suggest_next_step(self, obs: Dict) -> str:
+        """格式化下一步建议"""
+        if not obs.get("success"):
+            return ""
+        
+        lines = ["\n\n---\n\n**下一步建议**", ""]
+        
+        suggestion = obs.get("suggestion")
+        if suggestion:
+            lines.append(f"{suggestion}")
+        
+        actions = obs.get("suggested_actions", [])
+        if actions:
+            lines.append("\n建议操作：")
+            for action in actions:
+                lines.append(f"- {action}")
+        
+        return "\n".join(lines)
+    
+    def _format_pipeline_progress(self, obs: Dict) -> str:
+        """格式化 Pipeline 进度"""
+        if not obs.get("success"):
+            return ""
+        
+        lines = ["\n\n---\n\n**Pipeline 实时进度**", ""]
+        lines.append(f"- 当前状态: {obs.get('status', 'N/A')}")
+        lines.append(f"- 已完成阶段: {obs.get('completed_stages', 0)} / {obs.get('total_stages', 8)}")
+        lines.append(f"- 已生成分子: {obs.get('num_generated', 0)}")
+        lines.append(f"- 已通过分子: {obs.get('num_passed', 0)}")
+        lines.append(f"- 失败分子: {obs.get('num_failed', 0)}")
+        
+        current_stage = obs.get('current_stage')
+        if current_stage:
+            lines.append(f"- 当前执行: {current_stage}")
+        
+        elapsed = obs.get('elapsed_seconds')
+        if elapsed is not None:
+            lines.append(f"- 已运行: {elapsed} 秒")
+        
+        return "\n".join(lines)
+    
+    def _format_single_molecule_admet(self, obs: Dict) -> str:
+        """格式化单分子 ADMET 分析结果 — 正确读取嵌套数据，专业排版"""
+        if not obs.get("success"):
+            return f"\n\n**ADMET 分析失败**：{obs.get('message', '未知错误')}"
+        
+        smiles = obs.get("smiles", "N/A")
+        canonical = obs.get("canonical_smiles", smiles)
+        key_metrics = obs.get("key_metrics", {})
+        admet = obs.get("admet_result", {})
+        
+        # 正确读取嵌套数据
+        absorption = admet.get('absorption', {})
+        distribution = admet.get('distribution', {})
+        metabolism = admet.get('metabolism', {})
+        excretion = admet.get('excretion', {})
+        toxicity = admet.get('toxicity', {})
+        drug_likeness = admet.get('drug_likeness', {})
+        alerts = admet.get('alerts', {})
+        overall_score = admet.get('overall_score') or obs.get('overall_score', 'N/A')
+        
+        # 辅助函数：格式化数值
+        def fmt(val, fmt_str="{}"):
+            if val is None:
+                return "N/A"
+            if isinstance(val, float):
+                return fmt_str.format(val)
+            return str(val)
+        
+        # 辅助函数：判断药物相似性
+        def drug_like_status(qed, lipinski):
+            if qed is None:
+                return "N/A"
+            if qed > 0.6 and lipinski <= 1:
+                return "优秀"
+            elif qed > 0.5 and lipinski <= 2:
+                return "良好"
+            elif qed > 0.3 and lipinski <= 4:
+                return "一般"
+            else:
+                return "需改进"
+        
+        qed_val = drug_likeness.get('qed')
+        lipinski_v = drug_likeness.get('lipinski_violations', 0)
+        status = drug_like_status(qed_val, lipinski_v)
+        
+        lines = [
+            "",
+            "**单分子 ADMET 分析报告**",
+            "",
+            f"**SMILES**：`{canonical}`",
+            "",
+        ]
+        
+        # 基础理化性质
+        lines.append("**基础理化性质**")
+        lines.append("| 指标 | 数值 | 备注 |")
+        lines.append("|------|------|------|")
+        lines.append(f"| 分子量 (MW) | {fmt(key_metrics.get('MW'))} | {'通过' if key_metrics.get('MW', 500) <= 500 else '超标'} |")
+        lines.append(f"| LogP | {fmt(key_metrics.get('LogP'))} | {'通过' if key_metrics.get('LogP', 5) <= 5 else '偏高'} |")
+        lines.append(f"| TPSA | {fmt(key_metrics.get('TPSA'))} | {'通过' if key_metrics.get('TPSA', 140) <= 140 else '偏高'} |")
+        lines.append(f"| HBD (氢键供体) | {fmt(key_metrics.get('HBD'))} | {'通过' if key_metrics.get('HBD', 5) <= 5 else '超标'} |")
+        lines.append(f"| HBA (氢键受体) | {fmt(key_metrics.get('HBA'))} | {'通过' if key_metrics.get('HBA', 10) <= 10 else '超标'} |")
+        lines.append(f"| 可旋转键 | {fmt(key_metrics.get('RotB'))} | {'通过' if key_metrics.get('RotB', 10) <= 10 else '偏多'} |")
+        lines.append(f"| QED (药物相似度) | {fmt(qed_val)} | {status} |")
+        lines.append("")
+        
+        # 吸收
+        lines.append("**吸收 (Absorption)**")
+        lines.append("| 指标 | 数值 | 评价 |")
+        lines.append("|------|------|------|")
+        lines.append(f"| 水溶性 (logS) | {fmt(absorption.get('solubility'))} | {'良好' if absorption.get('solubility', -5) > -4 else '偏低'} |")
+        lines.append(f"| 渗透性 (Caco2) | {fmt(absorption.get('permeability'))} | {'良好' if absorption.get('permeability', -6) > -5 else '偏低'} |")
+        lines.append(f"| 口服生物利用度 | {fmt(absorption.get('oral_bioavailability'), '{:.1%}')} | {'高' if absorption.get('oral_bioavailability', 0) > 0.7 else '中等'} |")
+        lines.append(f"| 肠道吸收 (HIA) | {fmt(absorption.get('hia'), '{:.1%}')} | {'高' if absorption.get('hia', 0) > 0.8 else '中等'} |")
+        lines.append(f"| PAMPA | {fmt(absorption.get('pampa'), '{:.1%}')} | {'良好' if absorption.get('pampa', 0) > 0.5 else '一般'} |")
+        lines.append(f"| 脂溶性 | {fmt(absorption.get('lipophilicity'))} | {'适中' if 1 < absorption.get('lipophilicity', 0) < 4 else '偏高'} |")
+        lines.append("")
+        
+        # 分布
+        lines.append("**分布 (Distribution)**")
+        lines.append("| 指标 | 数值 | 评价 |")
+        lines.append("|------|------|------|")
+        lines.append(f"| 血脑屏障 (BBB) | {fmt(distribution.get('bbb'), '{:.1%}')} | {'可透过' if distribution.get('bbb', 0) > 0.5 else '不易透过'} |")
+        lines.append(f"| 血浆蛋白结合率 | {fmt(distribution.get('ppbr'), '{:.1%}')} | {'高' if distribution.get('ppbr', 0) > 0.8 else '适中'} |")
+        lines.append(f"| 分布容积 (Vdss) | {fmt(distribution.get('vdss'))} | {'适中' if 0.3 < distribution.get('vdss', 0) < 3 else '偏高'} |")
+        lines.append("")
+        
+        # 代谢
+        lines.append("**代谢 (Metabolism)**")
+        lines.append("| 指标 | 数值 | 评价 |")
+        lines.append("|------|------|------|")
+        lines.append(f"| CYP1A2 抑制 | {fmt(metabolism.get('cyp1a2'), '{:.1%}')} | {'高风险' if metabolism.get('cyp1a2', 0) > 0.5 else '低风险'} |")
+        lines.append(f"| CYP2C9 抑制 | {fmt(metabolism.get('cyp2c9'), '{:.1%}')} | {'高风险' if metabolism.get('cyp2c9', 0) > 0.5 else '低风险'} |")
+        lines.append(f"| CYP2D6 抑制 | {fmt(metabolism.get('cyp2d6'), '{:.1%}')} | {'高风险' if metabolism.get('cyp2d6', 0) > 0.5 else '低风险'} |")
+        lines.append(f"| CYP3A4 抑制 | {fmt(metabolism.get('cyp3a4'), '{:.1%}')} | {'高风险' if metabolism.get('cyp3a4', 0) > 0.5 else '低风险'} |")
+        lines.append(f"| CYP2C19 抑制 | {fmt(metabolism.get('cyp2c19'), '{:.1%}')} | {'高风险' if metabolism.get('cyp2c19', 0) > 0.5 else '低风险'} |")
+        lines.append("")
+        
+        # 排泄
+        lines.append("**排泄 (Excretion)**")
+        lines.append("| 指标 | 数值 | 评价 |")
+        lines.append("|------|------|------|")
+        lines.append(f"| 半衰期 (h) | {fmt(excretion.get('half_life'))} | {'长' if excretion.get('half_life', 0) > 6 else '适中'} |")
+        lines.append(f"| 肝脏清除率 | {fmt(excretion.get('clearance_hep'))} | {'适中' if 5 < excretion.get('clearance_hep', 0) < 20 else '偏高'} |")
+        lines.append(f"| 微粒体清除率 | {fmt(excretion.get('clearance_mic'))} | {'适中' if 10 < excretion.get('clearance_mic', 0) < 30 else '偏高'} |")
+        lines.append("")
+        
+        # 毒性
+        lines.append("**毒性 (Toxicity)**")
+        lines.append("| 指标 | 数值 | 评价 |")
+        lines.append("|------|------|------|")
+        lines.append(f"| hERG (心脏毒性) | {fmt(toxicity.get('herg'), '{:.1%}')} | {'高风险' if toxicity.get('herg', 0) > 0.5 else '低风险'} |")
+        lines.append(f"| AMES (致突变性) | {fmt(toxicity.get('ames'), '{:.1%}')} | {'阳性' if toxicity.get('ames', 0) > 0.5 else '阴性'} |")
+        lines.append(f"| DILI (肝毒性) | {fmt(toxicity.get('dili'), '{:.1%}')} | {'高风险' if toxicity.get('dili', 0) > 0.5 else '低风险'} |")
+        lines.append(f"| ClinTox (临床毒性) | {fmt(toxicity.get('clintox'), '{:.1%}')} | {'高风险' if toxicity.get('clintox', 0) > 0.5 else '低风险'} |")
+        lines.append(f"| LD50 (急性毒性) | {fmt(toxicity.get('ld50'))} | {'高毒性' if toxicity.get('ld50', 3) < 1.5 else '低毒性'} |")
+        lines.append("")
+        
+        # 规则评估
+        lines.append("**规则评估**")
+        lines.append("| 规则 | 结果 | 状态 |")
+        lines.append("|------|------|------|")
+        lines.append(f"| Lipinski 五规则 | {fmt(lipinski_v)} 条违反 | {'通过' if lipinski_v == 0 else '需关注'} |")
+        lines.append(f"| PAINS 警示 | {'有' if alerts.get('pains', 0) else '无'} | {'通过' if not alerts.get('pains', 0) else '需关注'} |")
+        lines.append(f"| BRENK 警示 | {'有' if alerts.get('brenk', 0) else '无'} | {'通过' if not alerts.get('brenk', 0) else '需关注'} |")
+        lines.append(f"| NIH 警示 | {'有' if alerts.get('nih', 0) else '无'} | {'通过' if not alerts.get('nih', 0) else '需关注'} |")
+        lines.append("")
+        
+        # 总体评价
+        lines.append(f"**总体评价**：总体评分 **{overall_score}**，药物相似性评估为 **{status}**。")
+        lines.append("")
         
         return "\n".join(lines)

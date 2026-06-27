@@ -813,3 +813,96 @@ def _build_wait_result(db, pipeline_run, project_id, elapsed, completed):
         result["summary"] = f"Pipeline 运行失败。已生成 {pipeline_run.num_generated} 个分子。"
     
     return result
+
+
+# ========== 单分子 ADMET 分析工具（直接分析，不依赖 Pipeline）==========
+
+@register_tool(
+    "analyze_single_molecule_admet",
+    "直接对单个 SMILES 分子进行完整的 ADMET 五分类分析（吸收、分布、代谢、排泄、毒性），无需运行 Pipeline。返回分子量、LogP、QED、hERG、AMES 等所有关键药代动力学和毒性指标。",
+    {
+        "smiles": {"type": "string", "description": "分子的 SMILES 字符串", "required": True}
+    }
+)
+def analyze_single_molecule_admet(smiles: str) -> Dict:
+    """直接对单个 SMILES 进行 ADMET 分析，不依赖项目或 Pipeline"""
+    from ..admet import AdmetPredictor
+    from ..utils import validate_smiles, canonicalize_smiles
+    
+    # 验证 SMILES
+    if not validate_smiles(smiles):
+        return {
+            "success": False,
+            "error": f"无效的 SMILES: {smiles}",
+            "message": "请提供有效的 SMILES 字符串。"
+        }
+    
+    try:
+        # 直接调用 ADMET 预测器
+        result = AdmetPredictor.predict(smiles)
+        
+        # 提取基础理化性质（ADMET-AI 不返回，需要额外计算）
+        from rdkit import Chem
+        from rdkit.Chem import Descriptors, rdMolDescriptors
+        mol = Chem.MolFromSmiles(smiles)
+        if mol:
+            mw = round(Descriptors.MolWt(mol), 2)
+            logp = round(Descriptors.MolLogP(mol), 2)
+            tpsa = round(Descriptors.TPSA(mol), 2)
+            hbd = rdMolDescriptors.CalcNumHBD(mol)
+            hba = rdMolDescriptors.CalcNumHBA(mol)
+            rotb = rdMolDescriptors.CalcNumRotatableBonds(mol)
+            qed_val = round(Descriptors.qed(mol), 3)
+        else:
+            mw = logp = tpsa = hbd = hba = rotb = qed_val = None
+        
+        # 从嵌套结构中提取关键指标
+        absorption = result.get('absorption', {})
+        distribution = result.get('distribution', {})
+        metabolism = result.get('metabolism', {})
+        excretion = result.get('excretion', {})
+        toxicity = result.get('toxicity', {})
+        drug_likeness = result.get('drug_likeness', {})
+        alerts = result.get('alerts', {})
+        
+        key_metrics = {
+            "MW": mw,
+            "LogP": logp,
+            "TPSA": tpsa,
+            "HBD": hbd,
+            "HBA": hba,
+            "RotB": rotb,
+            "QED": qed_val,
+            "hERG": toxicity.get('herg'),
+            "AMES": toxicity.get('ames'),
+            "DILI": toxicity.get('dili'),
+            "BBB": distribution.get('bbb'),
+            "CYP2D6": metabolism.get('cyp2d6'),
+            "CYP3A4": metabolism.get('cyp3a4'),
+            "Solubility": absorption.get('solubility'),
+            "Lipinski": drug_likeness.get('lipinski_violations', 0),
+            "PAINS": alerts.get('pains', 0),
+            "BRENK": alerts.get('brenk', 0),
+        }
+        
+        # 药物五分类评价
+        lipinski_v = drug_likeness.get('lipinski_violations', 0)
+        five_rule = '通过' if lipinski_v == 0 else f'违反 {lipinski_v} 条'
+        
+        return {
+            "success": True,
+            "smiles": smiles,
+            "canonical_smiles": canonicalize_smiles(smiles),
+            "admet_result": result,
+            "key_metrics": key_metrics,
+            "drug_likeness": five_rule,
+            "message": "ADMET 分析完成",
+            "overall_score": result.get('overall_score'),
+            "source": result.get('source', 'unknown'),
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "message": f"ADMET 分析失败: {e}"
+        }

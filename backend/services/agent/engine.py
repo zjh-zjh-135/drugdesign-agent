@@ -907,17 +907,19 @@ class CopilotAgent:
             if effective_project_id:
                 self._last_project_id = effective_project_id
         
-        # 6. 保存助手回复到记忆
+        # 6. 保存助手回复到记忆（使用 chat_summary 避免重复显示）
         if db_conn and session_id:
             from .memory import save_message
-            final_answer = result.get("final_answer", "")
+            # 优先使用 chat_summary（简短版本），避免聊天消息显示完整报告
+            final_answer_for_db = result.get("chat_summary", result.get("final_answer", ""))
             save_message(
-                db_conn, session_id, "assistant", final_answer,
+                db_conn, session_id, "assistant", final_answer_for_db,
                 project_id=effective_project_id,
                 metadata={
                     "action_cards": result.get("action_cards", []),
                     "autonomous": result.get("autonomous", False),
                     "actions": result.get("execution_report", {}).get("actions", []),
+                    "has_detailed_report": bool(result.get("final_answer")),
                 },
             )
 

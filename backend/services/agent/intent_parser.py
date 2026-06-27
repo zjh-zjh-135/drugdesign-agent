@@ -109,6 +109,26 @@ class IntentParser:
 
         # Stage 2: 实体提取
         entities = self._extract_entities(message, context)
+        
+        # Stage 2.5: 如果提取到 SMILES 且要求分析性质 → 直接识别为单分子分析（跳过 LLM）
+        smiles_entities = [e for e in entities if e.type == "smiles"]
+        if smiles_entities:
+            admet_keywords = [
+                "admet", "性质", "属性", "分析", "评估", "预测", "预测一下",
+                "admet分析", "admet评估", "admet预测", "admet性质",
+                "药代", "毒性", "吸收", "分布", "代谢", "排泄",
+            ]
+            msg_lower = message.lower()
+            if any(kw in msg_lower for kw in admet_keywords):
+                return ParsedIntent(
+                    primary_type=IntentType.SINGLE_ACTION,
+                    confidence=0.92,
+                    original_message=message,
+                    entities=entities,
+                    detected_actions=["analyze_single_molecule_admet"],
+                    suggested_tools=["analyze_single_molecule_admet"],
+                    estimated_complexity=1,
+                )
 
         # Stage 3: LLM 深度解析（复杂情况）
         llm_result = self._llm_deep_parse(message, context, entities)

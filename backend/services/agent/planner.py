@@ -159,6 +159,7 @@ class TaskPlanner:
 ### 1. 单一操作（single_action）
 - 直接调用对应工具，无需多余步骤
 - 如果缺少参数，用 suggest_next_step 收集信息
+- **单分子 ADMET 分析**：如果用户提供了 SMILES 并要求分析性质/ADMET，直接使用 `analyze_single_molecule_admet`，不需要创建项目或运行 Pipeline。这是最直接的分析方式。
 
 ### 2. 多意图组合（multi_intent）
 - 将多个目标拆分为独立的步骤序列
