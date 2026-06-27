@@ -40,6 +40,7 @@ class PipelineRunner:
             'final': 0,
         }
         self._db = None  # 线程内创建的session（在_run_pipeline中设置）
+        self.pipeline_run = None  # 初始化，避免AttributeError
     
     def _log(self, message: str):
         """记录日志"""

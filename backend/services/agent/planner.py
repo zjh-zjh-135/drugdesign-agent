@@ -168,6 +168,7 @@ class TaskPlanner:
 ### 3. 复杂分析（complex_analysis）
 - 先获取数据 → 再分析 → 最后给出建议
 - 例如：获取分子列表 → analyze_admet_sar → 生成报告
+- **失败分析场景**：如果用户要求"分析失败分子原因"，直接使用 `analyze_failures` 获取失败分子的分类和原因，不需要先获取项目状态。如果还需要更详细的建议，可以追加 `suggest_next_step`。
 
 ### 4. 条件性请求（conditional）
 - 必须包含条件判断步骤
@@ -192,6 +193,7 @@ class TaskPlanner:
 - 检查上下文是否包含所需信息
 - 如果缺少，先获取上下文（get_project_status / list_projects）
 - 然后基于上下文执行操作
+- **例外**：如果用户明确提到"失败分子/失败原因/失败分析"，说明意图已经明确，直接调用 `analyze_failures`，不需要先获取状态
 
 ### 8. 探索性请求（exploration）
 - 先用 list_projects 或 get_project_status 了解现状
@@ -240,14 +242,19 @@ class TaskPlanner:
         
         intent_text = ""
         if intent_context:
+            detected_actions = intent_context.get('detected_actions', [])
             intent_text = f"""
 ## 意图解析结果（已自动识别）
 - 意图类型：{intent_context.get('intent_type', 'unknown')}
 - 检测到的实体：{json.dumps(intent_context.get('entities', []), ensure_ascii=False, indent=2)}
+- 检测到的动作：{', '.join(detected_actions)}
 - 建议工具：{', '.join(intent_context.get('suggested_tools', []))}
 - 检测到的条件：{json.dumps(intent_context.get('conditions', []), ensure_ascii=False, indent=2)}
 - 缺少的信息：{', '.join(intent_context.get('entities_needed', []))}
 - 依赖的上下文：{', '.join(intent_context.get('dependencies', []))}
+
+## 意图解析器建议
+如果"检测到的动作"中包含明确的分析工具（如 analyze_failures、analyze_admet_sar），请直接调用该工具，不要先获取状态再建议。
 """
         
         return f"""用户目标：{goal}

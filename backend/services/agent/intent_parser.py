@@ -223,13 +223,30 @@ class IntentParser:
         msg_lower = message.lower().strip()
         project_id = context.get("project_id")
         
+        # P-1: 明确分析失败分子/失败原因 → 复杂分析（不是简单的 follow_up）
+        failure_analysis_patterns = [
+            "失败分子", "失败原因", "分析失败", "为什么失败", "失败分析",
+            "哪些分子失败了", "失败的分子", "为什么会失败",
+        ]
+        for p in failure_analysis_patterns:
+            if p in msg_lower:
+                return ParsedIntent(
+                    primary_type=IntentType.COMPLEX_ANALYSIS,
+                    confidence=0.9,
+                    original_message=message,
+                    entities=[ExtractedEntity(type="project_id", value=str(project_id), confidence=0.9)] if project_id else [],
+                    detected_actions=["analyze_failures", "get_project_status"],
+                    suggested_tools=["analyze_failures", "get_project_status"],
+                    estimated_complexity=3,
+                )
+        
         # P0: 上下文依赖检测（如果上下文有项目ID，用户说"再优化"、"分析结果"等）
         if project_id:
             follow_up_patterns = [
                 "再优化", "继续优化", "再分析一下", "看看结果", "分析结果", "查看结果",
                 "继续", "下一步", "然后呢", "结果呢", "优化一下", "再生成", "重新运行",
                 "帮我分析", "分析一下", "检查", "评估一下", "看看", "对比", "比较",
-                "为什么", "怎么回事", "出了什么问题", "失败原因", "失败",
+                "为什么", "怎么回事", "出了什么问题",
             ]
             for p in follow_up_patterns:
                 if p in msg_lower:
@@ -241,6 +258,22 @@ class IntentParser:
                         detected_actions=["get_project_status", "analyze_failures", "suggest_next_step"],
                         suggested_tools=["get_project_status", "analyze_failures", "suggest_next_step"],
                         estimated_complexity=2,
+                    )
+        
+        # P0.5: 无上下文的分析失败/失败原因
+        if not project_id:
+            for p in failure_analysis_patterns:
+                if p in msg_lower:
+                    return ParsedIntent(
+                        primary_type=IntentType.COMPLEX_ANALYSIS,
+                        confidence=0.85,
+                        original_message=message,
+                        entities=[],
+                        detected_actions=["analyze_failures", "list_projects"],
+                        suggested_tools=["analyze_failures", "list_projects"],
+                        needs_clarification=True,
+                        clarification_question="请提供项目 ID，以便分析失败分子。",
+                        estimated_complexity=3,
                     )
         
         # P1: 明显是聊天（极高置信度）
