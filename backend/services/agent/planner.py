@@ -126,7 +126,7 @@ class TaskPlanner:
 
         return f"""你是 DrugDesign Copilot Agent 的任务规划器。你的职责是将用户的目标拆解为可执行的步骤。
 
-## 可用工具
+## 可用工具（可以组合使用）
 {tools_text}
 
 ## 输出格式
@@ -143,6 +143,22 @@ class TaskPlanner:
   ],
   "summary": "用一句话概括整个计划"
 }}
+
+## 规划策略
+1. **工具组合**：复杂目标需要多步组合工具。例如"优化项目"=获取状态→分析失败→建议调整→执行调整
+2. **信息获取优先**：如果目标需要项目信息但当前没有，第一步用 "list_projects" 或 "get_project_status"
+3. **分析优先**：如果用户要求分析，先用分析工具获取数据，再用建议工具给出结论
+4. **执行验证**：重要操作（如 run_pipeline）后安排 "get_project_status" 验证结果
+5. **靶点直通流程**：当用户想为特定靶点生成分子时（如只说"EGFR"或"BRAF"），计划应为：
+   - 步骤1：create_project（target_name=靶点名称，name可不传，系统会自动生成）
+     注意：create_project 会自动从靶点数据库添加该靶点的已知活性分子作为参考，无需额外步骤
+   - 步骤2：run_pipeline（使用刚创建的项目ID）
+   - 步骤3：wait_for_pipeline（等待 Pipeline 完成，这是必须的！Pipeline 是异步运行的，需要等待才能获取结果）
+   - 步骤4：get_top_molecules（获取最佳候选分子）
+   如果用户没有指定项目名，create_project 将自动生成 "靶点_YYYYMMDD" 格式的名称。
+6. **Pipeline 异步等待策略**：run_pipeline 启动后，必须安排 wait_for_pipeline 等待其完成。不要跳过等待步骤直接获取结果。
+7. **迭代优化流程**：如果用户要求优化或重新运行，计划应为：
+   - get_project_status → analyze_failures → adjust_filters → run_pipeline → wait_for_pipeline → get_top_molecules
 
 ## 规则
 1. 步骤数量不超过 {self.max_steps} 步
@@ -221,6 +237,10 @@ class TaskPlanner:
         try:
             plan = json.loads(text)
         except json.JSONDecodeError:
+            return {}
+
+        # 防御：确保解析结果是字典
+        if not isinstance(plan, dict):
             return {}
 
         # Validate structure

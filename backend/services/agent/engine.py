@@ -25,6 +25,18 @@ KIMI_API_KEY = os.environ.get("KIMI_API_KEY", "")
 KIMI_API_URL = "https://api.moonshot.cn/v1/chat/completions"
 DEFAULT_MODEL = "moonshot-v1-8k"
 
+# 常见药物靶点名称
+KNOWN_TARGETS = {
+    "EGFR", "ALK", "BRAF", "KRAS", "PI3K", "MTOR", "VEGFR", "PDGFR", "FGFR",
+    "HER2", "JAK", "STAT", "GSK3B", "CDK", "HDAC", "PARP", "AKT", "MEK", "ERK",
+    "AMPK", "SIRT", "NAMPT", "PPAR", "FXR", "LXR", "ROR", "REV", "ERR", "ROCK",
+    "BCL2", "BCLXL", "MCL1", "XIAP", "BRD4", "BET", "EZH2", "IDH1", "IDH2",
+    "FLT3", "KIT", "PD1", "PDL1", "CTLA4", "LAG3", "TIM3", "TIGIT", "VISTA",
+    "TNF", "IL6", "IL17", "IL23", "CSF1R", "TIE2", "MET", "RET", "ROS1",
+    "TRK", "NTRK", "SMO", "PTCH", "GLI", "WNT", "BETA", "GAMMA", "DELTA",
+    "AR", "ER", "PR", "GR", "MR", "SHP2", "SOS1", "KRA", "NRAS", "HRAS",
+}
+
 
 # ---------------------------------------------------------------------------
 # Data classes
@@ -146,7 +158,8 @@ class ReActEngine:
         主执行循环。
 
         a. 判断是否为简单聊天（无目标导向）→ 直接返回聊天响应
-        b. 如果是目标导向 → Perceive → Plan → Execute → Report
+        b. 判断是否需要表单收集参数 → 返回表单响应
+        c. 如果是目标导向 → Perceive → Plan → Execute → Report
         """
         context = context or {}
         self.steps = []
@@ -164,7 +177,12 @@ class ReActEngine:
                 "autonomous": False,
             }
 
-        # ---- b. Goal-oriented autonomous workflow --------------------
+        # ---- b. Check if form is needed --------------------------------
+        form_check = self._needs_form(user_message, context)
+        if form_check.get("needs_form", False):
+            return self._build_form_response(form_check)
+
+        # ---- c. Goal-oriented autonomous workflow --------------------
         project_id = context.get("project_id")
 
         # 1. Perceive
@@ -252,7 +270,7 @@ class ReActEngine:
             Raw text content from the LLM, or empty string on failure.
         """
         if not self.api_key:
-            return ""
+            return "API Key 未配置，无法调用 LLM 服务。"
 
         # Rate limit guard
         elapsed = time.time() - self._last_llm_call
@@ -374,41 +392,70 @@ Final Answer: [给用户的完整回答]
         }
 
     # ------------------------------------------------------------------
+    # Target detection
+    # ------------------------------------------------------------------
+
+    def _extract_target_from_message(self, message: str) -> Optional[str]:
+        """
+        从用户消息中提取已知靶点名称。
+        匹配 KNOWN_TARGETS 中的靶点名（不区分大小写）。
+        返回大写标准名称，如 'EGFR'。
+        """
+        msg_upper = message.upper()
+        # 按长度降序匹配，避免短名匹配到长名的子串（如 RAF 匹配到 BRAF）
+        for target in sorted(KNOWN_TARGETS, key=len, reverse=True):
+            if target in msg_upper:
+                return target
+        return None
+
+    # ------------------------------------------------------------------
     # Simple chat detection
     # ------------------------------------------------------------------
 
     def _is_simple_chat(self, message: str) -> Dict[str, Any]:
         """
-        Determine if the user message is simple chat (no goal-oriented action).
-        Uses a lightweight LLM prompt, with keyword fallback.
+        判断用户消息是简单聊天还是目标导向操作请求。
+        三层判断：关键词快速匹配 → LLM 智能分析 → 长度 fallback
         """
-        # Quick keyword heuristic for common chat patterns
-        chat_indicators = [
+        # P0: 靶点名称检测——如果消息中包含已知靶点，不是简单聊天
+        detected_target = self._extract_target_from_message(message)
+        if detected_target:
+            return {"is_chat": False, "reason": f"检测到靶点名称：{detected_target}", "target": detected_target}
+        
+        # P1: 快速过滤——明显是聊天的短消息
+        if len(message) < 8:
+            return {"is_chat": True, "reason": "短消息，默认聊天"}
+        
+        # P2: 关键词快速匹配（聊天模式）
+        chat_patterns = [
             "你好", "hello", "hi", "嗨", "谢谢", "再见", "bye",
-            "在吗", "你是谁", "你能做什么", "介绍一下", "？", "?",
+            "在吗", "你是谁", "你能做什么", "介绍一下",
+            "什么是", "怎么理解", "解释一下", "为什么",
         ]
-        action_indicators = [
+        msg_lower = message.lower()
+        for pattern in chat_patterns:
+            if pattern in msg_lower:
+                return {"is_chat": True, "reason": f"匹配聊天模式：{pattern}"}
+        
+        # P3: 关键词快速匹配（目标导向模式）
+        action_patterns = [
             "创建", "运行", "分析", "调整", "查看", "对比", "建议",
             "pipeline", "project", "项目", "分子", "优化", "生成",
+            "执行", "开始", "处理", "帮我", "自动",
         ]
-
-        msg_lower = message.lower()
-        chat_score = sum(1 for c in chat_indicators if c in msg_lower)
-        action_score = sum(1 for a in action_indicators if a in msg_lower)
-
-        # If strong chat signals and weak action signals, treat as chat
-        if chat_score > 0 and action_score == 0:
-            return {"is_chat": True, "reason": "keyword_heuristic"}
-        if action_score > 0:
-            return {"is_chat": False, "reason": "keyword_heuristic"}
-
-        # Ambiguous -> ask LLM
+        for pattern in action_patterns:
+            if pattern in msg_lower:
+                return {"is_chat": False, "reason": f"匹配操作模式：{pattern}"}
+        
+        # P4: LLM 智能分析（最准确但耗时）
         prompt = (
-            '判断以下用户消息是"简单聊天"还是"目标导向的操作请求"。\n'
-            '只返回 JSON：{"is_chat": true/false, "reason": "简短原因"}\n\n'
+            '你是消息分类助手。判断以下消息是"简单聊天"还是"目标导向操作请求"。\n'
+            '简单聊天：询问知识、打招呼、闲聊、表达观点\n'
+            '目标导向：要求执行某个操作、分析数据、创建项目、运行流程\n'
+            '只返回 JSON：{"is_chat": true/false, "reason": "简要原因", "confidence": 0.0-1.0}\n\n'
             f'用户消息："{message}"'
         )
-
+        
         raw = self.call_llm(
             [{"role": "user", "content": prompt}],
             temperature=0.3,
@@ -416,12 +463,17 @@ Final Answer: [给用户的完整回答]
         try:
             parsed = self._parse_llm_plan(raw)
             if "is_chat" in parsed:
-                return parsed
+                # LLM 高置信度时直接采用
+                confidence = parsed.get("confidence", 0.5)
+                if confidence >= 0.7:
+                    return parsed
+                # 低置信度时保守处理（默认聊天，避免误操作）
+                return {"is_chat": True, "reason": f"LLM 低置信度({confidence})，保守处理为聊天"}
         except Exception:
             pass
-
-        # Final fallback: if message is very short, treat as chat
-        return {"is_chat": len(message) < 15, "reason": "length_fallback"}
+        
+        # P5: 最终 fallback——保守处理（默认聊天，避免误操作）
+        return {"is_chat": True, "reason": "无法判断，保守处理为聊天"}
 
     def _generate_chat_response(self, message: str, context: Dict) -> str:
         """Generate a simple chat response using the LLM."""
@@ -469,38 +521,68 @@ Final Answer: [给用户的完整回答]
         return {"type": "chat"}
 
     # ------------------------------------------------------------------
+    # Form detection (parameter collection)
+    # ------------------------------------------------------------------
+
+    def _needs_form(self, message: str, context: Dict) -> Dict[str, Any]:
+        """
+        判断是否需要表单收集缺失参数。
+        
+        Returns:
+            {"needs_form": False} 或 {"needs_form": True, "form_type": "..."}
+        """
+        msg_lower = message.lower()
+        
+        # 如果消息中包含已知靶点，无需表单，直接走 ReAct
+        detected_target = self._extract_target_from_message(message)
+        if detected_target:
+            return {"needs_form": False, "target": detected_target}
+        
+        # 创建项目意图
+        create_patterns = ['创建项目', '新建项目', '新项目', '开始项目', '创建一个新项目']
+        is_create_intent = any(p in msg_lower for p in create_patterns)
+        
+        if is_create_intent:
+            # 如果已有项目上下文，不需要表单
+            if context.get("project_id"):
+                return {"needs_form": False}
+            # 无项目上下文且无靶点，需要表单
+            return {"needs_form": True, "form_type": "project_creation"}
+        
+        return {"needs_form": False}
+
+    def _build_form_response(self, form_check: Dict) -> Dict[str, Any]:
+        """构建需要表单响应。"""
+        form_type = form_check.get("form_type", "")
+        
+        if form_type == "project_creation":
+            return {
+                "success": True,
+                "type": "form",
+                "form_type": "create_project",
+                "final_answer": "我可以直接帮你基于靶点名称自动创建项目并运行 Pipeline。请直接告诉我靶点名称（如 EGFR、BRAF），或在下方选择靶点。",
+                "action_cards": [],
+                "steps": [],
+                "autonomous": False,
+            }
+        
+        return {
+            "success": True,
+            "type": "form",
+            "form_type": form_type,
+            "final_answer": "请补充必要信息。",
+            "action_cards": [],
+            "steps": [],
+            "autonomous": False,
+        }
+
+    # ------------------------------------------------------------------
     # Output builders
     # ------------------------------------------------------------------
 
     def _build_action_cards_from_plan(self, plan: Dict[str, Any]) -> List[Dict]:
-        """Generate action cards from the plan steps for the frontend."""
-        cards = []
-        steps = plan.get("steps", [])[:5]
-        for i, step in enumerate(steps):
-            tool_name = step.get("tool", "")
-            params = step.get("params", {})
-
-            card_templates = {
-                "create_project": ("创建项目", "folder-plus"),
-                "run_pipeline": ("运行 Pipeline", "play"),
-                "analyze_failures": ("分析失败分子", "alert-triangle"),
-                "adjust_filters": ("调整过滤参数", "sliders"),
-                "get_project_status": ("查看项目状态", "activity"),
-                "compare_molecules": ("分子对比", "git-compare"),
-                "suggest_next_step": ("下一步建议", "lightbulb"),
-                "list_projects": ("列出项目", "list"),
-            }
-
-            title, icon = card_templates.get(tool_name, (f"执行 {tool_name}", "zap"))
-            cards.append({
-                "title": title,
-                "description": step.get("reason", "") or f"步骤 {i + 1}: {tool_name}",
-                "icon": icon,
-                "action": tool_name,
-                "params": params,
-                "status": "ready",
-            })
-        return cards
+        """Agent 自主模式下不返回 Action Cards，用户不需要手动点击。"""
+        return []
 
     def _build_thought_steps(self, report: Dict[str, Any]) -> List[Dict]:
         """Convert execution report steps to ThoughtStep-compatible dicts."""
@@ -603,38 +685,49 @@ class CopilotAgent:
         """注册默认工具（占位，实际工具在 tools.py 中定义）"""
         pass
 
-    def chat(self, message: str, project_id: int = None, session_id: str = None) -> Dict[str, Any]:
+    def chat(self, message: str, project_id: int = None, session_id: str = None, db=None) -> Dict[str, Any]:
         """
-        主聊天接口
-
-        Args:
-            message: 用户输入
-            project_id: 当前项目ID（可选）
-            session_id: 会话ID（可选）
-
-        Returns:
-            包含回答、action_cards、status 的字典
+        主聊天接口（增强版：自动推断 project_id + 统一处理）
         """
-        context = {"project_id": project_id, "session_id": session_id}
+        # 优先使用传入的 db 连接，否则使用 self.db
+        db_conn = db or self.db
+        
+        # 1. 自动推断 project_id（从 session 记忆中获取）
+        inferred_project_id = None
+        if db_conn and session_id:
+            from .memory import get_session_project_id
+            inferred_project_id = get_session_project_id(db_conn, session_id)
+        
+        # 优先级：显式传入 > session 记忆 > None
+        effective_project_id = project_id or inferred_project_id
+        
+        context = {
+            "project_id": effective_project_id,
+            "session_id": session_id,
+        }
 
-        # 保存用户消息到记忆
-        if self.db and session_id:
-            from .memory import save_message
-            save_message(self.db, session_id, "user", message, project_id=project_id)
+        # 2. 保存用户消息到记忆（使用 effective_project_id）
+        if db_conn and session_id:
+            from .memory import save_message, update_session_project_id
+            save_message(db_conn, session_id, "user", message, project_id=effective_project_id)
+            # 如果 project_id 已推断，更新 session 关联
+            if effective_project_id and not inferred_project_id:
+                update_session_project_id(db_conn, session_id, effective_project_id)
 
-        # 运行增强版 ReAct 引擎
+        # 3. 运行增强版 ReAct 引擎
         result = self.engine.run(message, context)
 
-        # 保存助手回复到记忆
-        if self.db and session_id:
+        # 4. 保存助手回复到记忆
+        if db_conn and session_id:
             from .memory import save_message
             final_answer = result.get("final_answer", "")
             save_message(
-                self.db, session_id, "assistant", final_answer,
-                project_id=project_id,
+                db_conn, session_id, "assistant", final_answer,
+                project_id=effective_project_id,
                 metadata={
                     "action_cards": result.get("action_cards", []),
                     "autonomous": result.get("autonomous", False),
+                    "actions": result.get("execution_report", {}).get("actions", []),
                 },
             )
 
@@ -643,13 +736,6 @@ class CopilotAgent:
     def execute_action_card(self, action: str, params: Dict) -> Dict[str, Any]:
         """
         执行用户确认的 Action Card
-
-        Args:
-            action: 动作名称（如 "run_pipeline"）
-            params: 动作参数
-
-        Returns:
-            执行结果
         """
         tool_func = self.tools.get(action)
         if not tool_func:

@@ -62,3 +62,6 @@ htmlcov/
 *.onnx
 
 # Note: .env.example is intentionally NOT ignored - it serves as a template
+
+# Runtime generated molecule images
+backend/static/molecules/

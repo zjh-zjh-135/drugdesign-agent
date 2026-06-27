@@ -80,6 +80,31 @@ def save_project_memory(db, project_id: int, memory_type: str, key: str,
     
     db.commit()
 
+def get_session_project_id(db, session_id: str) -> Optional[int]:
+    """从会话中推断当前项目ID（支持记忆持久化）"""
+    session = db.query(AgentSession).filter(AgentSession.session_id == session_id).first()
+    if session and session.project_id:
+        return session.project_id
+    
+    # 如果 session 没有 project_id，查找该 session 最近的消息中关联的 project_id
+    latest_msg = db.query(AgentMessage).filter(
+        AgentMessage.session_id == session_id,
+        AgentMessage.project_id.isnot(None)
+    ).order_by(AgentMessage.created_at.desc()).first()
+    
+    if latest_msg and latest_msg.project_id:
+        return latest_msg.project_id
+    
+    return None
+
+def update_session_project_id(db, session_id: str, project_id: int):
+    """更新会话关联的项目ID"""
+    session = db.query(AgentSession).filter(AgentSession.session_id == session_id).first()
+    if session:
+        session.project_id = project_id
+        db.commit()
+    return session
+
 def get_project_memory(db, project_id: int, key: str = None, 
                        memory_type: str = None, limit: int = 50) -> List[Dict]:
     """获取项目记忆"""

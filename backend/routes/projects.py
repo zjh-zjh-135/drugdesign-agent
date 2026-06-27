@@ -287,3 +287,20 @@ def upload_active_molecules(project_id):
         return jsonify({'success': True, 'data': {'added': added, 'skipped': skipped}})
     finally:
         db.close()
+
+from ..services.agent.tools import get_top_molecules as get_top_molecules_tool
+from ..utils.security import rate_limit, audit_log
+
+@projects_bp.route('/projects/<int:project_id>/top-molecules', methods=['GET'])
+@rate_limit(max_requests=30, window_seconds=60)
+@audit_log
+def get_top_molecules_route(project_id):
+    """获取项目中得分最高的候选分子（已通过合成筛选）"""
+    limit = request.args.get('limit', 10, type=int)
+    if limit <= 0 or limit > 100:
+        limit = 10
+    
+    result = get_top_molecules_tool(project_id=project_id, limit=limit)
+    if result.get('success'):
+        return jsonify({'success': True, 'data': result})
+    return jsonify({'success': False, 'error': result.get('error', '查询失败')}), 500

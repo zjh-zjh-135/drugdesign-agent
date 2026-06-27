@@ -14,7 +14,7 @@ const getBaseURL = () => {
 
 const client = axios.create({
   baseURL: getBaseURL(),
-  timeout: 30000,
+  timeout: 120000,
   headers: {
     'Content-Type': 'application/json'
   }
@@ -146,4 +146,5 @@ export const api = {
   saveProjectMemory: (projectId, data) => client.post(`/agent/projects/${projectId}/memory`, data),
   getProjectSummary: (projectId) => client.get(`/agent/projects/${projectId}/summary`),
   listAgentTools: () => client.get('/agent/tools'),
+  getTopMolecules: (projectId, limit = 10) => client.get(`/projects/${projectId}/top-molecules`, { params: { limit } }),
 }

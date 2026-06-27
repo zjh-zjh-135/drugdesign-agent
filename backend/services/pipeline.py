@@ -21,10 +21,11 @@ class PipelineRunner:
     _running_jobs = {}
     _lock = threading.Lock()
     
-    def __init__(self, session_factory, project_id: int, params: Dict):
+    def __init__(self, session_factory, project_id: int, params: Dict, pipeline_run_id=None):
         self.session_factory = session_factory  # 工厂函数，线程内创建新session
         self.project_id = project_id
         self.params = params
+        self.pipeline_run_id = pipeline_run_id  # 可选：已有 PipelineRun ID（由外部工具创建）
         self.job_id = None
         self.status = 'pending'
         self.logs = []
@@ -65,20 +66,30 @@ class PipelineRunner:
             self.status = 'running'
             self._log("Pipeline启动")
             
-            # 创建 PipelineRun 记录，用于关联失败分子
+            # 创建或复用 PipelineRun 记录，用于关联失败分子
             from ..models.database import PipelineRun
-            self.pipeline_run = PipelineRun(
-                project_id=self.project_id,
-                status='running',
-                num_generated=0,
-                num_filtered=0,
-                num_passed=0,
-                num_failed=0,
-                params_json=self.params
-            )
-            self._db.add(self.pipeline_run)
-            self._db.commit()
-            self.pipeline_run_id = self.pipeline_run.id
+            if self.pipeline_run_id:
+                self.pipeline_run = self._db.query(PipelineRun).filter(
+                    PipelineRun.id == self.pipeline_run_id
+                ).first()
+                if self.pipeline_run:
+                    self.pipeline_run.status = 'running'
+                    self.pipeline_run.params_json = self.params
+                    self._db.commit()
+            
+            if not self.pipeline_run:
+                self.pipeline_run = PipelineRun(
+                    project_id=self.project_id,
+                    status='running',
+                    num_generated=0,
+                    num_filtered=0,
+                    num_passed=0,
+                    num_failed=0,
+                    params_json=self.params
+                )
+                self._db.add(self.pipeline_run)
+                self._db.commit()
+                self.pipeline_run_id = self.pipeline_run.id
             
             # 清理该项目之前的非失败生成数据
             self._cleanup_previous_runs()

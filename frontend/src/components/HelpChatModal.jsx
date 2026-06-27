@@ -1,13 +1,17 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react'
+import { useNavigate } from 'react-router-dom'
 import {
   X, Send, HelpCircle, MessageSquarePlus, FlaskConical,
   User, Loader2, Maximize2, Minimize2, GripHorizontal,
   Play, CheckCircle, AlertTriangle, Sliders, Activity,
   GitCompare, Lightbulb, FolderPlus, ChevronDown, ChevronRight,
   Bot, Zap, RotateCcw, Clock, Trash2, StopCircle, Brain,
-  CircleDot, CheckCircle2, XCircle, Sparkles, ListChecks
+  CircleDot, CheckCircle2, XCircle, Sparkles, ListChecks,
+  Navigation, Filter, Bell, RefreshCw, BarChart3, Eye
 } from 'lucide-react'
 import { api } from '../api/client'
+import { useApp } from '../store/AppContext'
+import TargetSelector from './TargetSelector'
 
 const SUGGESTED_QUESTIONS = [
   '创建一个新项目',
@@ -17,38 +21,163 @@ const SUGGESTED_QUESTIONS = [
   '给我一些下一步建议',
 ]
 
-const ACTION_ICONS = {
-  'create_project': FolderPlus,
-  'run_pipeline': Play,
-  'analyze_failures': AlertTriangle,
-  'adjust_filters': Sliders,
-  'get_project_status': Activity,
-  'compare_molecules': GitCompare,
-  'suggest_next_step': Lightbulb,
-}
-
-const ACTION_COLORS = {
-  'create_project': 'bg-emerald-50 border-emerald-200 text-emerald-700 hover:bg-emerald-100',
-  'run_pipeline': 'bg-blue-50 border-blue-200 text-blue-700 hover:bg-blue-100',
-  'analyze_failures': 'bg-amber-50 border-amber-200 text-amber-700 hover:bg-amber-100',
-  'adjust_filters': 'bg-purple-50 border-purple-200 text-purple-700 hover:bg-purple-100',
-  'get_project_status': 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100',
-  'compare_molecules': 'bg-cyan-50 border-cyan-200 text-cyan-700 hover:bg-cyan-100',
-  'suggest_next_step': 'bg-rose-50 border-rose-200 text-rose-700 hover:bg-rose-100',
-}
-
 const MIN_WIDTH = 400
 const MIN_HEIGHT = 480
 const MAX_WIDTH = 1100
 const MAX_HEIGHT = 850
 
 export default function HelpChatModal({ onClose, projectId }) {
+  const navigate = useNavigate()
+  const { dispatch } = useApp()
+  
+  /* ── 项目创建表单（内嵌组件） ── */
+  const ProjectCreationForm = ({ onCreated, onAutoRun }) => {
+    const [target, setTarget] = useState(null)
+    const [projectName, setProjectName] = useState('')
+    const [creating, setCreating] = useState(false)
+    const [createError, setCreateError] = useState(null)
+    
+    // 选择靶点后自动生成项目名称
+    useEffect(() => {
+      if (target?.target_name) {
+        const date = new Date().toISOString().slice(0, 10).replace(/-/g, '')
+        setProjectName(`${target.target_name}_${date}`)
+      }
+    }, [target])
+    
+    const handleCreate = async () => {
+      if (!target?.target_name) {
+        setCreateError('请先选择靶点蛋白')
+        return
+      }
+      if (!projectName.trim()) {
+        setCreateError('请输入项目名称')
+        return
+      }
+      setCreating(true)
+      setCreateError(null)
+      try {
+        const res = await api.createProject({
+          name: projectName.trim(),
+          target_name: target.target_name,
+          target_pdb: target.target_pdb || '',
+          design_goal: 'hit_finding',
+        })
+        if (res.data?.success) {
+          const newProject = res.data.project
+          onCreated(newProject)
+        } else {
+          setCreateError(res.data?.error || '创建失败')
+        }
+      } catch (e) {
+        setCreateError(e.response?.data?.error || e.message || '创建失败')
+      } finally {
+        setCreating(false)
+      }
+    }
+
+    const handleAutoRun = async () => {
+      if (!target?.target_name) {
+        setCreateError('请先选择靶点蛋白')
+        return
+      }
+      setCreating(true)
+      setCreateError(null)
+      try {
+        const res = await api.createProject({
+          name: projectName.trim() || undefined,
+          target_name: target.target_name,
+          target_pdb: target.target_pdb || '',
+          design_goal: 'hit_finding',
+        })
+        if (res.data?.success) {
+          const newProject = res.data.project
+          onAutoRun(newProject)
+        } else {
+          setCreateError(res.data?.error || '创建失败')
+        }
+      } catch (e) {
+        setCreateError(e.response?.data?.error || e.message || '创建失败')
+      } finally {
+        setCreating(false)
+      }
+    }
+    
+    return (
+      <div className="mt-2 p-3 bg-white border border-slate-200 rounded-lg space-y-3">
+        <div className="text-[10px] font-medium text-slate-500 uppercase tracking-wider">项目创建</div>
+        
+        <div className="space-y-1.5">
+          <label className="text-[10px] font-medium text-slate-600">靶点蛋白</label>
+          <TargetSelector
+            value={target}
+            onChange={(val) => { setTarget(val); setCreateError(null) }}
+          />
+        </div>
+        
+        <div className="space-y-1.5">
+          <label className="text-[10px] font-medium text-slate-600">项目名称</label>
+          <input
+            type="text"
+            value={projectName}
+            onChange={(e) => { setProjectName(e.target.value); setCreateError(null) }}
+            placeholder="选择靶点后自动生成"
+            className="w-full px-2.5 py-1.5 text-xs border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-slate-400 focus:border-slate-400"
+          />
+          <div className="text-[9px] text-slate-400">设计目标默认为 hit_finding，其他参数使用系统默认</div>
+        </div>
+        
+        {createError && (
+          <div className="text-[10px] text-red-500 bg-red-50 px-2 py-1 rounded border border-red-100">
+            {createError}
+          </div>
+        )}
+        
+        <div className="flex gap-2">
+          <button
+            onClick={handleCreate}
+            disabled={creating || !target?.target_name}
+            className="flex-1 px-3 py-2 text-xs font-medium bg-slate-700 text-white rounded-lg hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed transition flex items-center justify-center gap-1.5"
+          >
+            {creating ? (
+              <>
+                <Loader2 className="w-3 h-3 animate-spin" />
+                创建中...
+              </>
+            ) : (
+              <>
+                <FolderPlus className="w-3 h-3" />
+                创建项目
+              </>
+            )}
+          </button>
+          <button
+            onClick={handleAutoRun}
+            disabled={creating || !target?.target_name}
+            className="flex-1 px-3 py-2 text-xs font-medium bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition flex items-center justify-center gap-1.5"
+          >
+            {creating ? (
+              <>
+                <Loader2 className="w-3 h-3 animate-spin" />
+                启动中...
+              </>
+            ) : (
+              <>
+                <Zap className="w-3 h-3" />
+                一键创建并运行
+              </>
+            )}
+          </button>
+        </div>
+      </div>
+    )
+  }
+  
   const [messages, setMessages] = useState([])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
   const [sessionId, setSessionId] = useState(null)
   const [mode, setMode] = useState('copilot') // 'copilot' | 'chat'
-  const [executingAction, setExecutingAction] = useState(null)
   const messagesEndRef = useRef(null)
   const inputRef = useRef(null)
   const windowRef = useRef(null)
@@ -60,6 +189,10 @@ export default function HelpChatModal({ onClose, projectId }) {
   const [agentReport, setAgentReport] = useState(null)
   const [agentCancelled, setAgentCancelled] = useState(false)
   const abortControllerRef = useRef(null)
+  
+  /* ── 前端动作展示 ── */
+  const [pendingActions, setPendingActions] = useState([])
+  const [showActionPanel, setShowActionPanel] = useState(false)
 
   /* ── 窗口状态 ── */
   const [position, setPosition] = useState({ x: 0, y: 0 })
@@ -181,35 +314,49 @@ export default function HelpChatModal({ onClose, projectId }) {
 
     try {
       if (mode === 'copilot') {
-        // Copilot 模式：判断是目标导向还是简单聊天
-        const isGoalOriented = checkGoalOriented(text.trim())
-
-        if (isGoalOriented) {
-          // 使用自主 Agent 目标执行
-          await handleGoal(text.trim(), userMsg)
-        } else {
-          // 普通 Copilot 聊天
-          const res = await api.agentChat({
-            message: text.trim(),
-            project_id: projectId,
-            session_id: sessionId
-          })
+        // Copilot 模式：统一走 agentChat，后端 LLM 判断是 goal-oriented 还是 chat
+        const res = await api.agentChat({
+          message: text.trim(),
+          project_id: projectId,
+          session_id: sessionId
+        })
+        
+        if (res.data?.success) {
+          const data = res.data.data || res.data
+          if (data.session_id) setSessionId(data.session_id)
           
-          if (res.data?.success) {
-            const data = res.data.data || res.data
-            if (data.session_id) setSessionId(data.session_id)
-            
+          // 执行前端动作（如果有）
+          const frontendActions = data.actions || []
+          if (frontendActions.length > 0) {
+            executeFrontendActions(frontendActions)
+          }
+          
+          // 判断是否为自主执行模式
+          const isAutonomous = data.type === 'action' || data.autonomous || 
+            (data.execution_report && data.execution_report.steps && data.execution_report.steps.length > 0)
+          
+          if (isAutonomous) {
+            setMessages((prev) => [...prev, {
+              role: 'assistant',
+              content: data.final_answer || '任务执行完成',
+              source: 'copilot',
+              steps: data.steps || [],
+              type: 'autonomous',
+              plan_summary: data.plan_summary,
+              execution_report: data.execution_report,
+            }])
+          } else {
             setMessages((prev) => [...prev, {
               role: 'assistant',
               content: data.final_answer || '操作已识别',
               source: 'copilot',
-              action_cards: data.action_cards || [],
               steps: data.steps || [],
-              type: data.type
+              type: data.type,
+              form_type: data.form_type || '',
             }])
-          } else {
-            throw new Error(res.data?.error || '请求失败')
           }
+        } else {
+          throw new Error(res.data?.error || '请求失败')
         }
       } else {
         // 普通 AI 聊天模式
@@ -245,6 +392,123 @@ export default function HelpChatModal({ onClose, projectId }) {
     ]
     return goalKeywords.some(kw => text.includes(kw))
   }
+
+  /* ── 前端动作执行器 ── */
+  const executeFrontendActions = useCallback((actions) => {
+    if (!actions || actions.length === 0) return
+    
+    const executed = []
+    
+    // 按优先级排序
+    const sortedActions = [...actions].sort((a, b) => (b.priority || 0) - (a.priority || 0))
+    
+    for (const action of sortedActions) {
+      try {
+        const { type, payload } = action
+        
+        switch (type) {
+          case 'navigate': {
+            const path = payload?.path || '/'
+            setTimeout(() => navigate(path), 100)
+            executed.push({ type, status: 'done', description: action.description })
+            break
+          }
+          
+          case 'set_state': {
+            const key = payload?.key
+            const value = payload?.value
+            if (key && value !== undefined) {
+              dispatch({ type: 'APPLY_AGENT_ACTION', payload: { key, value } })
+              executed.push({ type, status: 'done', description: action.description })
+            }
+            break
+          }
+          
+          case 'set_filter': {
+            const filters = payload?.filters
+            if (filters) {
+              dispatch({ type: 'SET_FILTER_PARAMS', payload: filters })
+              // 同时存储到 localStorage，页面加载时读取
+              localStorage.setItem('agent_filter_params', JSON.stringify(filters))
+              executed.push({ type, status: 'done', description: action.description })
+            }
+            break
+          }
+          
+          case 'highlight': {
+            const ids = payload?.molecule_ids || []
+            if (ids.length > 0) {
+              localStorage.setItem('agent_highlight_molecules', JSON.stringify(ids))
+              executed.push({ type, status: 'done', description: action.description })
+            }
+            break
+          }
+          
+          case 'toast': {
+            const msg = payload?.message || ''
+            const toastType = payload?.type || 'info'
+            const duration = payload?.duration || 4000
+            if (msg) {
+              dispatch({
+                type: 'ADD_NOTIFICATION',
+                payload: { id: Date.now(), message: msg, type: toastType, duration }
+              })
+              executed.push({ type, status: 'done', description: action.description })
+            }
+            break
+          }
+          
+          case 'refresh': {
+            setTimeout(() => window.location.reload(), 500)
+            executed.push({ type, status: 'done', description: action.description })
+            break
+          }
+          
+          case 'show_data': {
+            // 存储数据到 localStorage，页面组件读取展示
+            localStorage.setItem('agent_show_data', JSON.stringify(payload))
+            executed.push({ type, status: 'done', description: action.description })
+            break
+          }
+          
+          case 'show_chart': {
+            localStorage.setItem('agent_show_chart', JSON.stringify(payload))
+            executed.push({ type, status: 'done', description: action.description })
+            break
+          }
+          
+          case 'open_modal': {
+            const modalType = payload?.modal_type || 'info'
+            localStorage.setItem('agent_open_modal', JSON.stringify({ modal_type: modalType, data: payload }))
+            executed.push({ type, status: 'done', description: action.description })
+            break
+          }
+          
+          case 'scroll_to': {
+            const selector = payload?.selector
+            if (selector) {
+              setTimeout(() => {
+                const el = document.querySelector(selector)
+                el?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+              }, 300)
+              executed.push({ type, status: 'done', description: action.description })
+            }
+            break
+          }
+          
+          default:
+            executed.push({ type, status: 'skipped', description: `未知动作: ${type}` })
+        }
+      } catch (e) {
+        executed.push({ type: action.type, status: 'error', error: e.message })
+      }
+    }
+    
+    setPendingActions(executed)
+    if (executed.length > 0) setShowActionPanel(true)
+    
+    return executed
+  }, [navigate, dispatch])
 
   // 自主 Agent 目标执行
   const handleGoal = async (text, userMsg) => {
@@ -309,13 +573,33 @@ export default function HelpChatModal({ onClose, projectId }) {
           success: data.execution_report?.success || false,
         })
 
+        // ── 执行前端动作 ──
+        const frontendActions = data.actions || []
+        if (frontendActions.length > 0) {
+          console.log('执行前端动作:', frontendActions)
+          const executed = executeFrontendActions(frontendActions)
+          
+          // 在消息中追加动作执行结果
+          const actionSummary = executed
+            .filter(a => a.status === 'done')
+            .map(a => `• ${a.description}`)
+            .join('\n')
+          
+          if (actionSummary) {
+            setMessages((prev) => [...prev, {
+              role: 'system',
+              content: `已自动执行以下操作：\n${actionSummary}`,
+              source: 'action_summary'
+            }])
+          }
+        }
+
         // 替换 working 消息为最终 assistant 消息
         setMessages((prev) => prev.filter(m => !m.agent_working))
         setMessages((prev) => [...prev, {
           role: 'assistant',
           content: data.final_answer || '任务执行完成',
           source: 'copilot',
-          action_cards: data.action_cards || [],
           steps: data.steps || [],
           type: 'autonomous',
           plan_summary: data.plan_summary,
@@ -350,35 +634,9 @@ export default function HelpChatModal({ onClose, projectId }) {
     setMessages((prev) => prev.filter(m => !m.agent_working))
     setMessages((prev) => [...prev, {
       role: 'assistant',
-      content: '❌ 已取消当前任务',
+      content: '已取消当前任务',
       source: 'error'
     }])
-  }
-
-  const handleExecuteAction = async (action, params) => {
-    setExecutingAction(action)
-    try {
-      const res = await api.agentExecute({ action, params })
-      const data = res.data
-      
-      // 添加执行结果到消息
-      setMessages((prev) => [...prev, {
-        role: 'system',
-        content: data.success 
-          ? `✅ 操作 "${action}" 执行成功`
-          : `❌ 操作 "${action}" 执行失败: ${data.error || '未知错误'}`,
-        source: 'action_result',
-        action_result: data
-      }])
-    } catch (e) {
-      setMessages((prev) => [...prev, {
-        role: 'system',
-        content: `❌ 执行失败: ${e.message}`,
-        source: 'error'
-      }])
-    } finally {
-      setExecutingAction(null)
-    }
   }
 
   const handleKeyDown = (e) => {
@@ -397,50 +655,12 @@ export default function HelpChatModal({ onClose, projectId }) {
     setAgentSteps([])
     setAgentReport(null)
     setAgentCancelled(false)
+    setPendingActions([])
+    setShowActionPanel(false)
     inputRef.current?.focus()
   }
 
   const isEmpty = messages.length === 0
-
-  /* ── Action Card 组件 ── */
-  const ActionCard = ({ card }) => {
-    const IconComponent = ACTION_ICONS[card.action] || Zap
-    const colorClass = ACTION_COLORS[card.action] || 'bg-slate-50 border-slate-200 text-slate-700'
-    const isExecuting = executingAction === card.action
-
-    return (
-      <div className={`rounded-lg border p-3 mb-2 ${colorClass} transition-all`}>
-        <div className="flex items-center gap-2 mb-1.5">
-          <IconComponent className="w-4 h-4" />
-          <span className="text-xs font-semibold">{card.title}</span>
-          {isExecuting && <Loader2 className="w-3 h-3 animate-spin ml-auto" />}
-        </div>
-        <p className="text-[11px] opacity-80 mb-2">{card.description}</p>
-        <div className="flex gap-1.5">
-          <button
-            onClick={() => handleExecuteAction(card.action, card.params)}
-            disabled={isExecuting}
-            className="flex-1 text-[11px] px-2 py-1 rounded bg-white/80 hover:bg-white border border-current/20 font-medium transition disabled:opacity-50"
-          >
-            {isExecuting ? '执行中...' : '执行'}
-          </button>
-          <button
-            onClick={() => {
-              // 显示参数详情
-              setMessages((prev) => [...prev, {
-                role: 'system',
-                content: `参数: ${JSON.stringify(card.params, null, 2)}`,
-                source: 'debug'
-              }])
-            }}
-            className="px-2 py-1 rounded bg-white/50 hover:bg-white/80 text-[11px] transition"
-          >
-            详情
-          </button>
-        </div>
-      </div>
-    )
-  }
 
   /* ── Agent 工作进度组件 ── */
   const AgentWorkingIndicator = () => {
@@ -450,18 +670,18 @@ export default function HelpChatModal({ onClose, projectId }) {
 
     return (
       <div className="flex gap-2.5">
-        <div className="w-7 h-7 rounded-full flex items-center justify-center shrink-0 bg-blue-600 animate-pulse">
+        <div className="w-7 h-7 rounded-full flex items-center justify-center shrink-0 bg-slate-700 animate-pulse">
           <Brain className="w-3.5 h-3.5 text-white" />
         </div>
-        <div className="flex-1 px-3.5 py-2.5 rounded-2xl bg-blue-50 border border-blue-100 rounded-tl-sm">
+        <div className="flex-1 px-3.5 py-2.5 rounded-2xl bg-slate-50 border border-slate-200 rounded-tl-sm">
           <div className="flex items-center gap-2 mb-2">
-            <Loader2 className="w-3.5 h-3.5 text-blue-500 animate-spin" />
-            <span className="text-xs font-semibold text-blue-700">
+            <Loader2 className="w-3.5 h-3.5 text-slate-500 animate-spin" />
+            <span className="text-xs font-semibold text-slate-700">
               Agent 正在工作中...
             </span>
             <button
               onClick={handleCancelAgent}
-              className="ml-auto flex items-center gap-1 text-[10px] px-2 py-0.5 bg-red-50 text-red-500 border border-red-100 rounded hover:bg-red-100 transition"
+              className="ml-auto flex items-center gap-1 text-[10px] px-2 py-0.5 bg-slate-100 text-slate-600 border border-slate-200 rounded hover:bg-slate-200 transition"
             >
               <StopCircle className="w-3 h-3" />
               取消
@@ -469,15 +689,15 @@ export default function HelpChatModal({ onClose, projectId }) {
           </div>
 
           {/* 进度条 */}
-          <div className="w-full bg-blue-100 rounded-full h-1.5 mb-3">
+          <div className="w-full bg-slate-200 rounded-full h-1.5 mb-3">
             <div
-              className="bg-blue-500 h-1.5 rounded-full transition-all duration-500"
+              className="bg-slate-500 h-1.5 rounded-full transition-all duration-500"
               style={{ width: progress.total > 0 ? `${(progress.step / progress.total) * 100}%` : '10%' }}
             />
           </div>
 
           {/* 当前状态 */}
-          <div className="text-[10px] text-blue-600 mb-2">
+          <div className="text-[10px] text-slate-600 mb-2">
             {progress.status === 'planning' && '正在制定执行计划...'}
             {progress.status === 'running' && `正在执行: ${progress.tool}`}
             {progress.status === 'completed' && '执行完成，正在总结...'}
@@ -490,18 +710,18 @@ export default function HelpChatModal({ onClose, projectId }) {
               {agentSteps.map((s, i) => (
                 <div key={i} className="flex items-center gap-1.5 text-[10px]">
                   {s.status === 'ok' ? (
-                    <CheckCircle2 className="w-3 h-3 text-emerald-500" />
+                    <CheckCircle2 className="w-3 h-3 text-slate-500" />
                   ) : s.status === 'error' ? (
-                    <XCircle className="w-3 h-3 text-red-500" />
+                    <XCircle className="w-3 h-3 text-slate-400" />
                   ) : s.status === 'running' ? (
-                    <Loader2 className="w-3 h-3 text-blue-400 animate-spin" />
+                    <Loader2 className="w-3 h-3 text-slate-400 animate-spin" />
                   ) : (
                     <CircleDot className="w-3 h-3 text-slate-300" />
                   )}
                   <span className={`${
-                    s.status === 'ok' ? 'text-emerald-600' :
-                    s.status === 'error' ? 'text-red-500' :
-                    s.status === 'running' ? 'text-blue-600' :
+                    s.status === 'ok' ? 'text-slate-700' :
+                    s.status === 'error' ? 'text-slate-500' :
+                    s.status === 'running' ? 'text-slate-600' :
                     'text-slate-400'
                   }`}>
                     Step {s.step_number}: {s.tool}
@@ -520,19 +740,70 @@ export default function HelpChatModal({ onClose, projectId }) {
   const AgentReport = ({ report }) => {
     if (!report) return null
     return (
-      <div className="mt-2 p-3 bg-emerald-50 border border-emerald-100 rounded-lg">
+      <div className="mt-2 p-3 bg-slate-50 border border-slate-200 rounded-lg">
         <div className="flex items-center gap-1.5 mb-1.5">
-          <Sparkles className="w-3.5 h-3.5 text-emerald-600" />
-          <span className="text-[10px] font-semibold text-emerald-700">执行报告</span>
+          <Sparkles className="w-3.5 h-3.5 text-slate-500" />
+          <span className="text-[10px] font-semibold text-slate-700">执行报告</span>
           {report.success ? (
-            <span className="text-[9px] px-1.5 py-0.5 bg-emerald-100 text-emerald-600 rounded">成功</span>
+            <span className="text-[9px] px-1.5 py-0.5 bg-slate-100 text-slate-600 rounded">成功</span>
           ) : (
-            <span className="text-[9px] px-1.5 py-0.5 bg-amber-100 text-amber-600 rounded">部分完成</span>
+            <span className="text-[9px] px-1.5 py-0.5 bg-slate-100 text-slate-600 rounded">部分完成</span>
           )}
         </div>
-        <p className="text-[10px] text-emerald-800 leading-relaxed whitespace-pre-wrap">
+        <p className="text-[10px] text-slate-800 leading-relaxed whitespace-pre-wrap">
           {report.final_answer}
         </p>
+      </div>
+    )
+  }
+
+  /* ── 前端动作执行面板 ── */
+  const ActionSummaryPanel = ({ actions }) => {
+    if (!actions || actions.length === 0) return null
+    
+    const actionIcons = {
+      navigate: Navigation,
+      set_state: Activity,
+      set_filter: Filter,
+      highlight: Eye,
+      toast: Bell,
+      refresh: RefreshCw,
+      show_data: BarChart3,
+      show_chart: BarChart3,
+      open_modal: Maximize2,
+      scroll_to: Navigation,
+    }
+    
+    return (
+      <div className="mt-2 p-3 bg-slate-50 border border-slate-200 rounded-lg">
+        <div className="flex items-center gap-1.5 mb-2">
+          <Zap className="w-3.5 h-3.5 text-slate-500" />
+          <span className="text-[10px] font-semibold text-slate-700">已自动执行操作</span>
+        </div>
+        <div className="space-y-1">
+          {actions.map((action, i) => {
+            const Icon = actionIcons[action.type] || Zap
+            const statusColors = {
+              done: 'text-slate-700',
+              error: 'text-slate-500',
+              skipped: 'text-slate-400',
+            }
+            return (
+              <div key={i} className="flex items-center gap-1.5 text-[10px]">
+                <Icon className={`w-3 h-3 ${statusColors[action.status] || 'text-slate-500'}`} />
+                <span className={statusColors[action.status] || 'text-slate-600'}>
+                  {action.description}
+                </span>
+                {action.status === 'done' && (
+                  <CheckCircle2 className="w-3 h-3 text-slate-500 ml-auto" />
+                )}
+                {action.status === 'error' && (
+                  <XCircle className="w-3 h-3 text-slate-400 ml-auto" />
+                )}
+              </div>
+            )
+          })}
+        </div>
       </div>
     )
   }
@@ -558,7 +829,7 @@ export default function HelpChatModal({ onClose, projectId }) {
   return (
     <div
       ref={windowRef}
-      className={`fixed z-50 flex flex-col rounded-xl border border-slate-200 shadow-2xl overflow-hidden bg-white select-none ${
+      className={`fixed z-50 flex flex-col rounded-xl border border-slate-200 shadow-2xl overflow-hidden bg-white ${
         isDragging ? 'cursor-grabbing' : ''
       }`}
       style={{
@@ -636,7 +907,7 @@ export default function HelpChatModal({ onClose, projectId }) {
           <button
             onClick={onClose}
             title="关闭"
-            className="w-7 h-7 rounded-md hover:bg-red-100 flex items-center justify-center text-slate-400 hover:text-red-500 transition"
+            className="w-7 h-7 rounded-md hover:bg-slate-200 flex items-center justify-center text-slate-400 hover:text-slate-600 transition"
           >
             <X className="w-3.5 h-3.5" />
           </button>
@@ -669,14 +940,14 @@ export default function HelpChatModal({ onClose, projectId }) {
               <div className="grid grid-cols-2 gap-2 w-full mb-4">
                 <button
                   onClick={() => handleSend('帮我运行Pipeline')}
-                  className="flex items-center justify-center gap-1.5 px-3 py-2 bg-blue-50 border border-blue-200 rounded-lg text-xs text-blue-700 hover:bg-blue-100 transition"
+                  className="flex items-center justify-center gap-1.5 px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs text-slate-700 hover:bg-slate-100 transition"
                 >
                   <Play className="w-3.5 h-3.5" />
                   运行 Pipeline
                 </button>
                 <button
                   onClick={() => handleSend('帮我分析失败分子')}
-                  className="flex items-center justify-center gap-1.5 px-3 py-2 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-700 hover:bg-amber-100 transition"
+                  className="flex items-center justify-center gap-1.5 px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs text-slate-700 hover:bg-slate-100 transition"
                 >
                   <AlertTriangle className="w-3.5 h-3.5" />
                   分析失败
@@ -690,7 +961,7 @@ export default function HelpChatModal({ onClose, projectId }) {
                 </button>
                 <button
                   onClick={() => handleSend('帮我优化项目')}
-                  className="flex items-center justify-center gap-1.5 px-3 py-2 bg-rose-50 border border-rose-200 rounded-lg text-xs text-rose-700 hover:bg-rose-100 transition"
+                  className="flex items-center justify-center gap-1.5 px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs text-slate-700 hover:bg-slate-100 transition"
                 >
                   <Sparkles className="w-3.5 h-3.5" />
                   智能优化
@@ -743,15 +1014,51 @@ export default function HelpChatModal({ onClose, projectId }) {
                       msg.role === 'user'
                         ? 'bg-slate-700 text-white rounded-tr-sm'
                         : msg.source === 'error'
-                        ? 'bg-red-50 text-red-700 border border-red-100 rounded-tl-sm'
+                        ? 'bg-slate-50 text-slate-700 border border-slate-100 rounded-tl-sm'
                         : 'bg-slate-50 text-slate-700 border border-slate-100 rounded-tl-sm'
                     }`}>
                       <div className="whitespace-pre-wrap">{msg.content}</div>
                       
+                      {/* 内嵌表单 */}
+                      {msg.type === 'form' && msg.form_type === 'create_project' && (
+                        <ProjectCreationForm
+                          onCreated={(newProject) => {
+                            // 1. 更新全局状态
+                            dispatch({ type: 'SET_PROJECT', payload: newProject })
+                            // 2. 导航到项目列表
+                            navigate('/projects')
+                            // 3. 在聊天中追加成功消息
+                            setMessages((prev) => [...prev, {
+                              role: 'system',
+                              content: `项目 "${newProject.name}" 创建成功。已设置为当前项目，并导航到项目列表。`,
+                              source: 'action_summary',
+                            }])
+                            // 4. 追加建议下一步
+                            setMessages((prev) => [...prev, {
+                              role: 'assistant',
+                              content: '项目已创建。建议下一步：运行 Pipeline 生成分子，或查看项目详情。',
+                              source: 'copilot',
+                            }])
+                          }}
+                          onAutoRun={(newProject) => {
+                            // 1. 更新全局状态
+                            dispatch({ type: 'SET_PROJECT', payload: newProject })
+                            // 2. 在聊天中追加系统消息
+                            setMessages((prev) => [...prev, {
+                              role: 'system',
+                              content: `项目 "${newProject.name}" 已创建，正在自动启动 Pipeline...`,
+                              source: 'action_summary',
+                            }])
+                            // 3. 触发 Agent 自动执行：运行 Pipeline 并获取 Top 分子
+                            handleSend(`为项目 ${newProject.id} 运行 Pipeline 并获取 Top 分子`)
+                          }}
+                        />
+                      )}
+                      
                       {/* 来源标签 */}
                       {msg.role === 'assistant' && msg.source === 'copilot' && (
                         <div className="mt-1.5 pt-1.5 border-t border-slate-200/60 flex items-center gap-1">
-                          <span className="text-[9px] px-1.5 py-0.5 bg-blue-50 text-blue-600 rounded border border-blue-100 font-medium">
+                          <span className="text-[9px] px-1.5 py-0.5 bg-slate-100 text-slate-600 rounded border border-slate-200 font-medium">
                             Copilot
                           </span>
                           <span className="text-[9px] text-slate-400">
@@ -761,30 +1068,24 @@ export default function HelpChatModal({ onClose, projectId }) {
                       )}
                       {msg.role === 'assistant' && msg.source === 'rag' && (
                         <div className="mt-1.5 pt-1.5 border-t border-slate-200/60 flex items-center gap-1">
-                          <span className="text-[9px] px-1.5 py-0.5 bg-emerald-50 text-emerald-600 rounded border border-emerald-100 font-medium">
+                          <span className="text-[9px] px-1.5 py-0.5 bg-slate-100 text-slate-600 rounded border border-slate-200 font-medium">
                             知识库
                           </span>
                         </div>
                       )}
                       {msg.role === 'assistant' && msg.source === 'ai' && (
                         <div className="mt-1.5 pt-1.5 border-t border-slate-200/60 flex items-center gap-1">
-                          <span className="text-[9px] px-1.5 py-0.5 bg-blue-50 text-blue-500 rounded border border-blue-100 font-medium">
+                          <span className="text-[9px] px-1.5 py-0.5 bg-slate-100 text-slate-600 rounded border border-slate-200 font-medium">
                             AI
                           </span>
                           <span className="text-[9px] text-slate-400">KIMI</span>
                         </div>
                       )}
-                      
-                      {/* Action Cards */}
-                      {msg.action_cards && msg.action_cards.length > 0 && (
-                        <div className="mt-3 pt-2 border-t border-slate-200/60">
-                          <div className="flex items-center gap-1 mb-2">
-                            <Zap className="w-3 h-3 text-amber-500" />
-                            <span className="text-[10px] font-medium text-slate-500">可执行操作</span>
-                          </div>
-                          {msg.action_cards.map((card, ci) => (
-                            <ActionCard key={ci} card={card} />
-                          ))}
+                      {msg.role === 'system' && msg.source === 'action_summary' && (
+                        <div className="mt-1.5 pt-1.5 border-t border-slate-200/60 flex items-center gap-1">
+                          <span className="text-[9px] px-1.5 py-0.5 bg-slate-100 text-slate-600 rounded border border-slate-200 font-medium">
+                            自动操作
+                          </span>
                         </div>
                       )}
                       
@@ -822,6 +1123,11 @@ export default function HelpChatModal({ onClose, projectId }) {
                           plan_summary: msg.plan_summary,
                           success: msg.execution_report?.success,
                         }} />
+                      )}
+                      
+                      {/* 前端动作执行结果 */}
+                      {msg.source === 'action_summary' && pendingActions.length > 0 && (
+                        <ActionSummaryPanel actions={pendingActions} />
                       )}
                     </div>
                   </>

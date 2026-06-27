@@ -28,6 +28,15 @@ function reducer(state, action) {
       return { ...state, notifications: [...state.notifications, action.payload] }
     case 'CLEAR_NOTIFICATIONS':
       return { ...state, notifications: [] }
+    // NEW: 支持前端动作直接修改状态
+    case 'APPLY_AGENT_ACTION':
+      // action.payload: { key: 'filterParams' | 'currentProject' | 'pipelineStatus' | 'pipelineJobId', value: ... }
+      if (!action.payload || !action.payload.key) return state
+      const key = action.payload.key
+      if (key in state) {
+        return { ...state, [key]: action.payload.value }
+      }
+      return state
     default:
       return state
   }

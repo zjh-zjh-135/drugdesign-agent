@@ -22,7 +22,7 @@ agent = CopilotAgent()
 from ..services.agent.tools import (
     create_project, list_projects, run_pipeline, analyze_failures,
     adjust_filters, get_project_status, compare_molecules, suggest_next_step,
-    get_failed_molecules
+    get_failed_molecules, get_top_molecules
 )
 
 def get_db():
@@ -113,21 +113,22 @@ def agent_chat():
         # 确保会话存在
         get_or_create_session(db, session_id, project_id=project_id, title=message[:50])
         
-        # 运行 Agent（增强版引擎）
-        result = agent.chat(message, project_id=project_id, session_id=session_id)
+        # 运行 Agent（增强版引擎，传入 db 以支持自动推断）
+        result = agent.chat(message, project_id=project_id, session_id=session_id, db=db)
         
         # 如果返回的是 dict
         if isinstance(result, dict):
             return jsonify({
                 'success': True,
                 'type': result.get('type', 'chat'),
+                'form_type': result.get('form_type', ''),
                 'final_answer': result.get('final_answer', ''),
-                'action_cards': result.get('action_cards', []),
                 'steps': result.get('steps', []),
                 'session_id': session_id,
                 'autonomous': result.get('autonomous', False),
                 'plan_summary': result.get('plan_summary', ''),
                 'execution_report': result.get('execution_report', {}),
+                'actions': result.get('execution_report', {}).get('actions', []),
             })
         
         return jsonify({
@@ -199,17 +200,19 @@ def agent_goal():
         
         get_or_create_session(db, session_id, project_id=project_id, title=message[:50])
         
-        # 运行增强版 Agent（自主模式）
-        result = agent.chat(message, project_id=project_id, session_id=session_id)
+        # 运行增强版 Agent（自主模式，传入 db 支持自动推断）
+        result = agent.chat(message, project_id=project_id, session_id=session_id, db=db)
         
         return jsonify({
             'success': True,
             'type': 'autonomous',
+            'form_type': result.get('form_type', ''),
             'final_answer': result.get('final_answer', ''),
             'plan_summary': result.get('plan_summary', ''),
             'steps': result.get('steps', []),
             'execution_report': result.get('execution_report', {}),
             'action_cards': result.get('action_cards', []),
+            'actions': result.get('execution_report', {}).get('actions', []),  # NEW: 前端动作
             'session_id': session_id,
         })
         
@@ -243,7 +246,7 @@ def execute_action():
     allowed_actions = {
         'create_project', 'list_projects', 'run_pipeline', 'analyze_failures',
         'adjust_filters', 'get_project_status', 'compare_molecules',
-        'suggest_next_step', 'get_failed_molecules'
+        'suggest_next_step', 'get_failed_molecules', 'get_top_molecules'
     }
     if action not in allowed_actions:
         return jsonify({'success': False, 'error': '非法操作'}), 400
