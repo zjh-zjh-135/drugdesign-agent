@@ -1,7 +1,19 @@
 import axios from 'axios'
 
+// 生产环境自动检测 API 地址
+const getBaseURL = () => {
+  if (import.meta.env.PROD) {
+    // 生产环境：使用完整后端 URL
+    // 部署时替换为实际后端地址，例如：
+    // return 'https://drugdesign-api.onrender.com/api'
+    return import.meta.env.VITE_API_URL || '/api'
+  }
+  // 开发环境：使用 Vite 代理
+  return '/api'
+}
+
 const client = axios.create({
-  baseURL: '/api',
+  baseURL: getBaseURL(),
   timeout: 30000,
   headers: {
     'Content-Type': 'application/json'

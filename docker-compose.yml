@@ -1,0 +1,23 @@
+version: '3.8'
+
+services:
+  drugdesign-agent:
+    build: .
+    container_name: drugdesign-agent
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    environment:
+      - FLASK_ENV=production
+      - KIMI_API_KEY=${KIMI_API_KEY}
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:5173}
+      - FLASK_SECRET_KEY=${FLASK_SECRET_KEY}
+    volumes:
+      - ./data:/app/data
+      - ./backend/static:/app/backend/static
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s

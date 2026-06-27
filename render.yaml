@@ -1,0 +1,37 @@
+# Render Blueprint - 一键部署配置
+# 使用方式：Render Dashboard → Blueprints → New Blueprint → 上传此文件
+
+services:
+  # 后端 API 服务
+  - type: web
+    name: drugdesign-api
+    runtime: python
+    plan: free  # 或 starter ($7/月，无休眠)
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn -w 2 -b 0.0.0.0:5000 wsgi:app
+    envVars:
+      - key: FLASK_ENV
+        value: production
+      - key: FLASK_SECRET_KEY
+        generateValue: true  # 自动生成随机密钥
+      - key: KIMI_API_KEY
+        sync: false  # 手动在 Dashboard 设置
+      - key: CORS_ORIGINS
+        sync: false  # 手动设置，值为前端域名
+      - key: DB_PATH
+        value: /opt/render/project/src/backend/drugdesign.db
+    disk:
+      name: data
+      mountPath: /opt/render/project/src/backend
+      sizeGB: 1
+
+  # 可选：PostgreSQL 数据库（替代 SQLite，推荐生产环境）
+  # - type: pserv
+  #   name: drugdesign-postgres
+  #   runtime: docker
+  #   plan: starter
+  #   dockerfilePath: ./postgres.Dockerfile
+  #   disk:
+  #     name: data
+  #     mountPath: /var/lib/postgresql/data
+  #     sizeGB: 1

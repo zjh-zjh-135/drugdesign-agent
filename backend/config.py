@@ -1,9 +1,14 @@
 import os
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(BASE_DIR, 'drugdesign.db')
+# 支持环境变量覆盖数据库路径（Docker/Render 部署用）
+DB_PATH = os.environ.get('DB_PATH', os.path.join(BASE_DIR, 'drugdesign.db'))
 STATIC_DIR = os.path.join(BASE_DIR, 'static')
 MOLECULE_IMG_DIR = os.path.join(STATIC_DIR, 'molecules')
+
+# 确保目录存在
+os.makedirs(os.path.dirname(DB_PATH) if os.path.dirname(DB_PATH) else '.', exist_ok=True)
+os.makedirs(MOLECULE_IMG_DIR, exist_ok=True)
 
 # 默认过滤阈值
 DEFAULT_THRESHOLDS = {
