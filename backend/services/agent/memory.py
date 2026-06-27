@@ -39,11 +39,30 @@ def save_message(db, session_id: str, role: str, content: str,
     db.commit()
     return msg
 
-def get_conversation_history(db, session_id: str, limit: int = 20) -> List[Dict]:
-    """获取最近 N 条对话历史"""
+def get_conversation_history(db, session_id: str, limit: int = 20, max_tokens: int = 4000) -> List[Dict]:
+    """获取最近 N 条对话历史，支持 Token 预算控制。
+    
+    Args:
+        max_tokens: 最大 token 预算，超出时对早期消息做摘要或截断。
+    """
     messages = db.query(AgentMessage).filter(
         AgentMessage.session_id == session_id
     ).order_by(AgentMessage.created_at.desc()).limit(limit).all()
+    
+    messages = list(reversed(messages))  # 按时间正序
+    
+    result = []
+    total_chars = 0
+    # 简单估算：每字符约 0.5 token（混合中英文）
+    for m in messages:
+        content_len = len(m.content) if m.content else 0
+        total_chars += content_len
+    
+    # 如果超出预算，只保留最近的消息
+    estimated_tokens = total_chars * 0.5
+    if estimated_tokens > max_tokens and len(messages) > 5:
+        # 保留最近 5 条完整，其余丢弃
+        messages = messages[-5:]
     
     return [
         {
@@ -52,7 +71,7 @@ def get_conversation_history(db, session_id: str, limit: int = 20) -> List[Dict]
             "metadata": m.metadata_json,
             "created_at": m.created_at.isoformat()
         }
-        for m in reversed(messages)  # 按时间正序
+        for m in messages
     ]
 
 def save_project_memory(db, project_id: int, memory_type: str, key: str, 

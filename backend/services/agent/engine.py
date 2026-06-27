@@ -26,16 +26,44 @@ KIMI_API_URL = "https://api.moonshot.cn/v1/chat/completions"
 DEFAULT_MODEL = "moonshot-v1-8k"
 
 # 常见药物靶点名称
-KNOWN_TARGETS = {
-    "EGFR", "ALK", "BRAF", "KRAS", "PI3K", "MTOR", "VEGFR", "PDGFR", "FGFR",
-    "HER2", "JAK", "STAT", "GSK3B", "CDK", "HDAC", "PARP", "AKT", "MEK", "ERK",
-    "AMPK", "SIRT", "NAMPT", "PPAR", "FXR", "LXR", "ROR", "REV", "ERR", "ROCK",
-    "BCL2", "BCLXL", "MCL1", "XIAP", "BRD4", "BET", "EZH2", "IDH1", "IDH2",
-    "FLT3", "KIT", "PD1", "PDL1", "CTLA4", "LAG3", "TIM3", "TIGIT", "VISTA",
-    "TNF", "IL6", "IL17", "IL23", "CSF1R", "TIE2", "MET", "RET", "ROS1",
-    "TRK", "NTRK", "SMO", "PTCH", "GLI", "WNT", "BETA", "GAMMA", "DELTA",
-    "AR", "ER", "PR", "GR", "MR", "SHP2", "SOS1", "KRA", "NRAS", "HRAS",
-}
+# KNOWN_TARGETS 从 target_database 动态加载，避免硬编码与数据库不同步
+# 支持精确匹配和模糊搜索（中英文/别名）
+
+def _load_known_targets():
+    """从靶点数据库加载所有已知靶点名称"""
+    try:
+        from ..services.target_database import SORTED_TARGET_NAMES
+        return set(SORTED_TARGET_NAMES)
+    except Exception:
+        return set()
+
+
+def _extract_target_from_message(message: str) -> Optional[str]:
+    """
+    从用户消息中提取/匹配已知靶点名称。
+    1. 先尝试精确匹配（消息中包含完整靶点名）
+    2. 再尝试模糊搜索（数据库中的别名/关键词匹配）
+    3. 返回最匹配的靶点名称（数据库中的标准名）
+    """
+    msg_upper = message.upper()
+    
+    # 步骤1：精确匹配 - 按数据库中的靶点名称完整匹配
+    known_targets = _load_known_targets()
+    for target in sorted(known_targets, key=len, reverse=True):
+        if target.upper() in msg_upper:
+            return target
+    
+    # 步骤2：模糊搜索 - 查询 target_database 的搜索函数
+    try:
+        from ..services.target_database import search_targets
+        results = search_targets(message)
+        if results:
+            # 返回最匹配的第一个
+            return results[0]
+    except Exception:
+        pass
+    
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -143,11 +171,18 @@ class ReActEngine:
         self.tools = tool_registry
         self.memory = memory_store
         self.max_steps = max_steps
-        self.llm = llm_client
+        
+        # 注入统一的 LLMClient（如果未提供，使用默认单例）
+        if llm_client is not None:
+            self.llm = llm_client
+        else:
+            from .llm_client import get_default_client
+            self.llm = get_default_client(api_key=api_key, model=model)
+        
         self.api_key = api_key or KIMI_API_KEY
         self.model = model
         self.steps: List[ThoughtStep] = []
-        self._last_llm_call = 0.0
+        self._last_llm_call = 0.0  # 保留用于向后兼容，但逻辑已移到 LLMClient
 
     # ------------------------------------------------------------------
     # Main entry
@@ -155,18 +190,51 @@ class ReActEngine:
 
     def run(self, user_message: str, context: Dict = None) -> Dict[str, Any]:
         """
-        主执行循环。
+        主执行循环（增强版）。
 
-        a. 判断是否为简单聊天（无目标导向）→ 直接返回聊天响应
-        b. 判断是否需要表单收集参数 → 返回表单响应
-        c. 如果是目标导向 → Perceive → Plan → Execute → Report
+        流程：
+        a. 意图解析（Intent Parsing）→ 理解用户复杂输入
+        b. 判断是否需要澄清 → 返回澄清问题
+        c. 判断是否为简单聊天 → 直接返回聊天响应
+        d. 判断是否需要表单 → 返回表单响应
+        e. 多意图拆分 → 串行/并行执行子计划
+        f. 目标导向 → Perceive → Plan → Execute → Report
         """
+        import uuid
+        trace_id = str(uuid.uuid4())[:8]  # 生成短 trace_id 用于请求追踪
+        
         context = context or {}
+        context["trace_id"] = trace_id
         self.steps = []
 
-        # ---- a. Check if simple chat -----------------------------------
-        chat_check = self._is_simple_chat(user_message)
-        if chat_check.get("is_chat", False):
+        # ===== 1. 意图解析 =====
+        try:
+            from .intent_parser import IntentParser, IntentType
+            parser = IntentParser(api_key=self.api_key, model=self.model)
+            parsed_intent = parser.parse(user_message, context)
+            intent_context = parser.build_planning_context(parsed_intent)
+        except Exception as e:
+            # 意图解析失败，回退到旧流程
+            parsed_intent = None
+            intent_context = {}
+
+        # ===== 2. 判断是否需要澄清 =====
+        if parsed_intent and parsed_intent.needs_clarification:
+            return {
+                "success": True,
+                "type": "clarification",
+                "final_answer": parsed_intent.clarification_question,
+                "action_cards": [],
+                "steps": [],
+                "autonomous": False,
+                "parsed_intent": intent_context if parsed_intent else None,
+                "trace_id": trace_id,
+            }
+
+        # ===== 3. 判断是否为简单聊天 =====
+        # 使用意图解析结果 + 传统方法双重判断
+        is_chat = self._is_simple_chat_enhanced(user_message, parsed_intent)
+        if is_chat.get("is_chat", False):
             chat_response = self._generate_chat_response(user_message, context)
             return {
                 "success": True,
@@ -175,14 +243,32 @@ class ReActEngine:
                 "final_answer": chat_response,
                 "action_cards": [],
                 "autonomous": False,
+                "parsed_intent": intent_context if parsed_intent else None,
+                "trace_id": trace_id,
             }
 
-        # ---- b. Check if form is needed --------------------------------
-        form_check = self._needs_form(user_message, context)
+        # ===== 4. 判断是否需要表单 =====
+        form_check = self._needs_form(user_message, context, parsed_intent)
         if form_check.get("needs_form", False):
-            return self._build_form_response(form_check)
+            result = self._build_form_response(form_check)
+            result["trace_id"] = trace_id
+            return result
 
-        # ---- c. Goal-oriented autonomous workflow --------------------
+        # ===== 5. 多意图处理 =====
+        if parsed_intent and parsed_intent.primary_type == IntentType.MULTI_INTENT:
+            sub_intents = parser.split_multi_intent(parsed_intent)
+            if len(sub_intents) > 1:
+                result = self._execute_multi_intent(sub_intents, context, parser)
+                result["trace_id"] = trace_id
+                return result
+
+        # ===== 6. 目标导向主流程 =====
+        result = self._execute_goal_oriented(user_message, context, intent_context)
+        result["trace_id"] = trace_id
+        return result
+
+    def _execute_goal_oriented(self, user_message: str, context: Dict, intent_context: Dict) -> Dict[str, Any]:
+        """执行目标导向的工作流。"""
         project_id = context.get("project_id")
 
         # 1. Perceive
@@ -195,7 +281,7 @@ class ReActEngine:
             env_state = {"error": str(e)}
             env_report = f"环境感知失败: {e}"
 
-        # 2. Plan
+        # 2. Plan（传入意图解析结果）
         try:
             from .planner import TaskPlanner
             planner = TaskPlanner(
@@ -209,6 +295,7 @@ class ReActEngine:
                 project_id=project_id,
                 env_state=env_state,
                 available_tools=self.tools.list_tools(),
+                intent_context=intent_context,
             )
         except Exception as e:
             plan = {"success": False, "steps": [], "summary": f"规划失败: {e}", "raw_response": ""}
@@ -237,10 +324,12 @@ class ReActEngine:
                 "final_answer": f"执行失败: {e}",
             }
 
-        # 4. Build action cards from the plan for UI
-        action_cards = self._build_action_cards_from_plan(plan)
+        # 4. 条件步骤处理（如果 plan 中有 condition 步骤）
+        if any("condition" in s for s in plan.get("steps", [])):
+            report = self._handle_conditional_steps(plan, report, context)
 
-        # 5. Build ThoughtSteps for compatibility
+        # 5. Build outputs
+        action_cards = self._build_action_cards_from_plan(plan)
         thought_steps = self._build_thought_steps(report)
 
         return {
@@ -252,7 +341,86 @@ class ReActEngine:
             "autonomous": True,
             "plan_summary": plan.get("summary", ""),
             "execution_report": report,
+            "parsed_intent": intent_context,
         }
+
+    def _execute_multi_intent(self, sub_intents: List, context: Dict, parser) -> Dict[str, Any]:
+        """
+        执行多意图拆分后的串行/并行处理。
+        将多个子意图按顺序执行（有依赖）或并行执行（无依赖），结果合并。
+        """
+        import concurrent.futures
+        
+        all_results = []
+        all_steps = []
+        
+        # 检测是否有依赖关系（简单判断：如果都涉及不同的项目ID，可以并行）
+        can_parallel = len(sub_intents) <= 3  # 最多 3 个并行
+        for i in range(len(sub_intents) - 1):
+            entities_i = {e.type for e in sub_intents[i].entities}
+            entities_j = {e.type for e in sub_intents[i + 1].entities}
+            # 如果有相同的项目ID 或 靶点，认为有依赖
+            if entities_i & entities_j:
+                can_parallel = False
+                break
+        
+        if can_parallel and len(sub_intents) > 1:
+            # 并行执行
+            with concurrent.futures.ThreadPoolExecutor(max_workers=len(sub_intents)) as executor:
+                futures = []
+                for sub_intent in sub_intents:
+                    intent_context = parser.build_planning_context(sub_intent)
+                    future = executor.submit(self._execute_goal_oriented, sub_intent.original_message, context, intent_context)
+                    futures.append(future)
+                
+                for future in concurrent.futures.as_completed(futures):
+                    result = future.result()
+                    all_results.append(result)
+                    all_steps.extend(result.get("steps", []))
+        else:
+            # 串行执行（原逻辑）
+            for i, sub_intent in enumerate(sub_intents):
+                intent_context = parser.build_planning_context(sub_intent)
+                result = self._execute_goal_oriented(
+                    sub_intent.original_message,
+                    context,
+                    intent_context
+                )
+                all_results.append(result)
+                all_steps.extend(result.get("steps", []))
+                
+                # 将前一个结果作为后一个的上下文
+                if result.get("success") and i < len(sub_intents) - 1:
+                    context = {**context, "previous_result": result}
+
+        # 合并所有结果
+        combined_answer = self._merge_multi_intent_results(all_results)
+        
+        return {
+            "success": any(r.get("success", False) for r in all_results),
+            "type": "multi_action",
+            "steps": all_steps,
+            "final_answer": combined_answer,
+            "action_cards": [],
+            "autonomous": True,
+            "sub_results": all_results,
+            "parsed_intent": parser.build_planning_context(sub_intents[0]) if sub_intents else {},
+        }
+
+    def _merge_multi_intent_results(self, results: List[Dict]) -> str:
+        """合并多个子意图的执行结果。"""
+        parts = []
+        for i, result in enumerate(results, 1):
+            answer = result.get("final_answer", "")
+            if answer:
+                parts.append(f"### 任务 {i}\n{answer}")
+        return "\n\n".join(parts) if parts else "所有任务已完成。"
+
+    def _handle_conditional_steps(self, plan: Dict, report: Dict, context: Dict) -> Dict[str, Any]:
+        """处理计划中的条件步骤。"""
+        # 条件步骤已在 executor 中处理，这里可以添加额外的条件后处理
+        # 例如：如果条件未满足，给出替代建议
+        return report
 
     # ------------------------------------------------------------------
     # LLM wrapper
@@ -260,50 +428,10 @@ class ReActEngine:
 
     def call_llm(self, messages: List[Dict[str, str]], temperature: float = 0.7) -> str:
         """
-        Call the KIMI API (moonshot-v1-8k).
-
-        Args:
-            messages: OpenAI-style message list [{"role": "...", "content": "..."}]
-            temperature: Sampling temperature
-
-        Returns:
-            Raw text content from the LLM, or empty string on failure.
+        调用 LLM（向后兼容接口）。
+        实际逻辑已委托给 LLMClient。
         """
-        if not self.api_key:
-            return "API Key 未配置，无法调用 LLM 服务。"
-
-        # Rate limit guard
-        elapsed = time.time() - self._last_llm_call
-        if elapsed < 1.0:
-            time.sleep(1.0 - elapsed)
-
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
-        payload = {
-            "model": self.model,
-            "messages": messages,
-            "temperature": temperature,
-        }
-
-        try:
-            resp = requests.post(
-                KIMI_API_URL, headers=headers, json=payload, timeout=60
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            content = (
-                data.get("choices", [{}])[0]
-                .get("message", {})
-                .get("content", "")
-                .strip()
-            )
-            self._last_llm_call = time.time()
-            return content
-        except Exception:
-            self._last_llm_call = time.time()
-            return ""
+        return self.llm.call(messages, temperature=temperature)
 
     # ------------------------------------------------------------------
     # System prompts
@@ -396,26 +524,34 @@ Final Answer: [给用户的完整回答]
     # ------------------------------------------------------------------
 
     def _extract_target_from_message(self, message: str) -> Optional[str]:
-        """
-        从用户消息中提取已知靶点名称。
-        匹配 KNOWN_TARGETS 中的靶点名（不区分大小写）。
-        返回大写标准名称，如 'EGFR'。
-        """
-        msg_upper = message.upper()
-        # 按长度降序匹配，避免短名匹配到长名的子串（如 RAF 匹配到 BRAF）
-        for target in sorted(KNOWN_TARGETS, key=len, reverse=True):
-            if target in msg_upper:
-                return target
-        return None
+        """调用模块级函数进行靶点提取（支持精确匹配 + 模糊搜索）。"""
+        return _extract_target_from_message(message)
 
     # ------------------------------------------------------------------
     # Simple chat detection
     # ------------------------------------------------------------------
 
+    def _is_simple_chat_enhanced(self, message: str, parsed_intent: Any = None) -> Dict[str, Any]:
+        """
+        增强版聊天检测。结合意图解析结果 + 传统方法双重判断。
+        """
+        # 如果意图解析已明确分类，优先使用
+        if parsed_intent:
+            from .intent_parser import IntentType
+            if parsed_intent.primary_type == IntentType.SIMPLE_CHAT:
+                return {"is_chat": True, "reason": "意图解析器判定为简单聊天", "confidence": parsed_intent.confidence}
+            if parsed_intent.primary_type in [IntentType.SINGLE_ACTION, IntentType.MULTI_INTENT, 
+                                               IntentType.COMPLEX_ANALYSIS, IntentType.CONDITIONAL,
+                                               IntentType.COMPARISON, IntentType.OPTIMIZATION,
+                                               IntentType.FOLLOW_UP, IntentType.EXPLORATION]:
+                return {"is_chat": False, "reason": f"意图解析器判定为: {parsed_intent.primary_type.value}", "confidence": parsed_intent.confidence}
+        
+        # 回退到传统方法
+        return self._is_simple_chat(message)
+
     def _is_simple_chat(self, message: str) -> Dict[str, Any]:
         """
-        判断用户消息是简单聊天还是目标导向操作请求。
-        三层判断：关键词快速匹配 → LLM 智能分析 → 长度 fallback
+        传统聊天检测（回退用）。
         """
         # P0: 靶点名称检测——如果消息中包含已知靶点，不是简单聊天
         detected_target = self._extract_target_from_message(message)
@@ -521,39 +657,73 @@ Final Answer: [给用户的完整回答]
         return {"type": "chat"}
 
     # ------------------------------------------------------------------
-    # Form detection (parameter collection)
+    # Form detection (parameter collection) - Enhanced
     # ------------------------------------------------------------------
 
-    def _needs_form(self, message: str, context: Dict) -> Dict[str, Any]:
+    def _needs_form(self, message: str, context: Dict, parsed_intent: Any = None) -> Dict[str, Any]:
         """
-        判断是否需要表单收集缺失参数。
-        
-        Returns:
-            {"needs_form": False} 或 {"needs_form": True, "form_type": "..."}
+        增强版表单检测。结合上下文判断是否需要收集参数。
+        关键规则：如果上下文中有项目ID，大多数请求直接执行，不需要表单。
         """
         msg_lower = message.lower()
+        project_id = context.get("project_id")
+        
+        # 如果意图解析已识别需要澄清，但上下文有项目ID，降低澄清强度
+        if parsed_intent and parsed_intent.needs_clarification:
+            # 如果上下文有项目ID，且用户只是缺少靶点，尝试从上下文推断
+            if project_id:
+                missing = parsed_intent.clarification_question
+                if "项目ID" in missing or "项目" in missing:
+                    # 上下文有项目ID，不需要澄清
+                    return {"needs_form": False, "project_id": project_id}
+            # 否则确实需要澄清（如缺少靶点名称）
+            return {"needs_form": True, "form_type": "clarification", "question": parsed_intent.clarification_question}
         
         # 如果消息中包含已知靶点，无需表单，直接走 ReAct
         detected_target = self._extract_target_from_message(message)
         if detected_target:
             return {"needs_form": False, "target": detected_target}
         
-        # 创建项目意图
+        # 创建项目意图：如果没有上下文且无靶点，需要表单
         create_patterns = ['创建项目', '新建项目', '新项目', '开始项目', '创建一个新项目']
         is_create_intent = any(p in msg_lower for p in create_patterns)
         
         if is_create_intent:
             # 如果已有项目上下文，不需要表单
-            if context.get("project_id"):
+            if project_id:
                 return {"needs_form": False}
             # 无项目上下文且无靶点，需要表单
             return {"needs_form": True, "form_type": "project_creation"}
+        
+        # 多意图且无明确实体：如果上下文有项目ID，直接执行
+        if parsed_intent and parsed_intent.primary_type.value == "multi_intent":
+            if project_id:
+                return {"needs_form": False}
+            if not any(e.type in ["target", "project_id", "smiles"] for e in parsed_intent.entities):
+                return {"needs_form": True, "form_type": "clarification", "question": "请明确你要执行的具体操作对象（靶点/项目/分子）。"}
+        
+        # 用户说"帮我分析"、"优化一下"、"查看结果"等：如果有上下文项目ID，直接执行
+        action_keywords = ["分析", "优化", "查看", "检查", "评估", "调整", "对比", "运行"]
+        if any(kw in msg_lower for kw in action_keywords):
+            if project_id:
+                return {"needs_form": False, "project_id": project_id}
         
         return {"needs_form": False}
 
     def _build_form_response(self, form_check: Dict) -> Dict[str, Any]:
         """构建需要表单响应。"""
         form_type = form_check.get("form_type", "")
+        
+        if form_type == "clarification":
+            return {
+                "success": True,
+                "type": "clarification",
+                "form_type": "clarification",
+                "final_answer": form_check.get("question", "我需要更多信息才能继续。"),
+                "action_cards": [],
+                "steps": [],
+                "autonomous": False,
+            }
         
         if form_type == "project_creation":
             return {
@@ -680,6 +850,10 @@ class CopilotAgent:
             self.tools = get_registry()
         self.engine = ReActEngine(self.tools)
         self._register_default_tools()
+        
+        # 实例级上下文记忆：当 db/session 不可用时提供回退
+        self._last_project_id: Optional[int] = None
+        self._last_target: Optional[str] = None
 
     def _register_default_tools(self):
         """注册默认工具（占位，实际工具在 tools.py 中定义）"""
@@ -687,37 +861,53 @@ class CopilotAgent:
 
     def chat(self, message: str, project_id: int = None, session_id: str = None, db=None) -> Dict[str, Any]:
         """
-        主聊天接口（增强版：自动推断 project_id + 统一处理）
+        主聊天接口（增强版：自动推断 project_id + 统一处理 + 实例级上下文记忆）
         """
         # 优先使用传入的 db 连接，否则使用 self.db
         db_conn = db or self.db
         
-        # 1. 自动推断 project_id（从 session 记忆中获取）
-        inferred_project_id = None
-        if db_conn and session_id:
+        # 1. 自动推断 project_id（多优先级：显式传入 > session 记忆 > 实例记忆）
+        effective_project_id = project_id
+        if not effective_project_id and db_conn and session_id:
             from .memory import get_session_project_id
-            inferred_project_id = get_session_project_id(db_conn, session_id)
+            effective_project_id = get_session_project_id(db_conn, session_id)
+        if not effective_project_id:
+            # 回退到实例级记忆
+            effective_project_id = self._last_project_id
         
-        # 优先级：显式传入 > session 记忆 > None
-        effective_project_id = project_id or inferred_project_id
+        # 2. 从消息中提取靶点（如果有）
+        detected_target = _extract_target_from_message(message)
+        if detected_target:
+            self._last_target = detected_target
         
+        # 构建上下文，包含实例级记忆
         context = {
             "project_id": effective_project_id,
             "session_id": session_id,
+            "last_target": self._last_target,
         }
 
-        # 2. 保存用户消息到记忆（使用 effective_project_id）
+        # 3. 保存用户消息到记忆（使用 effective_project_id）
         if db_conn and session_id:
             from .memory import save_message, update_session_project_id
             save_message(db_conn, session_id, "user", message, project_id=effective_project_id)
-            # 如果 project_id 已推断，更新 session 关联
-            if effective_project_id and not inferred_project_id:
+            if effective_project_id and not project_id:
                 update_session_project_id(db_conn, session_id, effective_project_id)
 
-        # 3. 运行增强版 ReAct 引擎
+        # 4. 运行增强版 ReAct 引擎
         result = self.engine.run(message, context)
 
-        # 4. 保存助手回复到记忆
+        # 5. 从结果中更新实例级记忆
+        if result.get("success"):
+            report = result.get("execution_report", {})
+            # 如果执行中创建了项目，更新 last_project_id
+            if report and report.get("project_id"):
+                self._last_project_id = report.get("project_id")
+            # 如果 context 中有 project_id，也更新
+            if effective_project_id:
+                self._last_project_id = effective_project_id
+        
+        # 6. 保存助手回复到记忆
         if db_conn and session_id:
             from .memory import save_message
             final_answer = result.get("final_answer", "")

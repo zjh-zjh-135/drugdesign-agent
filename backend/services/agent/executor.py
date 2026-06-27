@@ -75,15 +75,21 @@ class TaskExecutor:
         llm_interval: float = LLM_CALL_INTERVAL,
         step_timeout: int = STEP_TIMEOUT,
         max_retries: int = MAX_RETRIES,
+        llm_client=None,
     ):
         self.tools = tool_registry or get_registry()
-        self.api_key = api_key or KIMI_API_KEY
-        self.model = model
         self.temperature = temperature
         self.llm_interval = llm_interval
         self.step_timeout = step_timeout
         self.max_retries = max_retries
         self._last_llm_call = 0.0
+        
+        # 注入统一的 LLMClient
+        if llm_client is not None:
+            self.llm = llm_client
+        else:
+            from .llm_client import get_default_client
+            self.llm = get_default_client(api_key=api_key, model=model)
 
     # ------------------------------------------------------------------
     # Public API
@@ -113,17 +119,51 @@ class TaskExecutor:
         current_steps = list(steps)
         step_index = 0
 
+        # 简单工具列表：不需要 LLM 决策，直接继续
+        SIMPLE_TOOLS = {
+            "get_project_status", "list_projects", "get_top_molecules",
+            "get_pipeline_progress", "get_failed_molecules", "compare_molecules",
+            "suggest_next_step", "get_molecule_details",
+        }
+
         while step_index < len(current_steps):
             step_def = current_steps[step_index]
+            
+            # 条件评估：如果步骤有条件，先评估
+            condition = step_def.get("condition", "")
+            if condition:
+                condition_met = self._evaluate_condition(condition, log, env_state)
+                if not condition_met:
+                    # 条件不满足，跳过此步骤
+                    skipped_step = ExecutionStep(
+                        step_number=step_index + 1,
+                        tool=step_def.get("tool", ""),
+                        params=step_def.get("params", {}) if isinstance(step_def.get("params"), dict) else {},
+                        reason=f"[条件不满足: {condition}] {step_def.get('reason', '')}",
+                        expected_outcome=step_def.get("expected_outcome", ""),
+                    )
+                    skipped_step.status = "skipped"
+                    skipped_step.observation = {"condition": condition, "skipped": True, "reason": "条件不满足"}
+                    skipped_step.finished_at = datetime.now()
+                    log.steps.append(skipped_step)
+                    step_index += 1
+                    continue
+            
             exec_step = self._run_single_step(step_def, step_index + 1)
             log.steps.append(exec_step)
 
-            # After each step, ask LLM what to do next
-            decision = self._query_llm_decision(log, env_state)
-            log.raw_llm_decisions.append(decision.get("raw", ""))
-
-            exec_step.llm_decision = decision.get("decision", "continue")
-            exec_step.llm_thought = decision.get("thought", "")
+            # 判断是否需要 LLM 决策：简单工具直接跳过，复杂工具才决策
+            tool_name = step_def.get("tool", "")
+            if tool_name in SIMPLE_TOOLS and exec_step.status == "ok":
+                # 简单工具成功执行，直接继续，不调用 LLM 决策
+                exec_step.llm_decision = "continue"
+                exec_step.llm_thought = "简单工具执行成功，直接继续"
+            else:
+                # 复杂工具或执行失败，调用 LLM 决策
+                decision = self._query_llm_decision(log, env_state)
+                log.raw_llm_decisions.append(decision.get("raw", ""))
+                exec_step.llm_decision = decision.get("decision", "continue")
+                exec_step.llm_thought = decision.get("thought", "")
 
             if exec_step.llm_decision == "finish":
                 log.final_answer = decision.get("answer", "")
@@ -223,7 +263,7 @@ class TaskExecutor:
     # ------------------------------------------------------------------
 
     def _run_single_step(self, step_def: Dict[str, Any], step_number: int) -> ExecutionStep:
-        """Execute a single step with timeout and retry logic."""
+        """Execute a single step with timeout, retry, and conditional evaluation."""
         # 防御：确保 step_def 是字典
         if not isinstance(step_def, dict):
             exec_step = ExecutionStep(
@@ -242,6 +282,7 @@ class TaskExecutor:
         params = step_def.get("params", {}) if isinstance(step_def.get("params"), dict) else {}
         reason = step_def.get("reason", "")
         expected = step_def.get("expected_outcome", "")
+        condition = step_def.get("condition", "")
 
         exec_step = ExecutionStep(
             step_number=step_number,
@@ -252,6 +293,16 @@ class TaskExecutor:
         )
         exec_step.status = "running"
 
+        # 条件评估：如果步骤有条件，先评估条件是否满足
+        if condition:
+            exec_step.reason = f"[条件: {condition}] {reason}"
+            # 条件步骤由 LLM 决策器在 execute_plan 中处理
+            # 这里标记为 condition，实际执行会由 LLM 判断是否跳过
+            exec_step.status = "ok"
+            exec_step.observation = {"condition": condition, "skipped": False, "note": "条件步骤，由决策器评估"}
+            exec_step.finished_at = datetime.now()
+            return exec_step
+
         func = self.tools.get(tool_name)
         if not func:
             exec_step.status = "error"
@@ -259,11 +310,14 @@ class TaskExecutor:
             exec_step.finished_at = datetime.now()
             return exec_step
 
+        # 特殊处理：wait_for_pipeline 使用后台线程 + 超时，避免阻塞主线程
+        if tool_name == "wait_for_pipeline":
+            return self._execute_wait_for_pipeline(func, params, exec_step)
+
         # Execute with retry
         last_error = ""
         for attempt in range(self.max_retries + 1):
             try:
-                # Simple timeout simulation via threading if needed
                 result = func(**params)
                 exec_step.observation = result
                 exec_step.status = "ok"
@@ -279,6 +333,40 @@ class TaskExecutor:
                     exec_step.status = "error"
                     exec_step.error = f"{last_error} (已重试 {self.max_retries} 次)"
 
+        exec_step.finished_at = datetime.now()
+        return exec_step
+
+    def _execute_wait_for_pipeline(self, func, params: Dict, exec_step: ExecutionStep) -> ExecutionStep:
+        """
+        执行 wait_for_pipeline，使用后台线程 + 超时，避免阻塞主线程。
+        
+        - 如果 10 秒内完成，返回实际结果
+        - 如果超时，返回 "正在等待" 状态，executor 后续会继续检查
+        """
+        import concurrent.futures
+        
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(func, **params)
+            try:
+                result = future.result(timeout=10)  # 最多等待 10 秒
+                exec_step.observation = result
+                exec_step.status = "ok" if result.get("success", False) else "partial"
+                exec_step.error = result.get("error", "")
+            except concurrent.futures.TimeoutError:
+                # Pipeline 仍在运行，返回等待状态
+                exec_step.observation = {
+                    "success": True,
+                    "completed": False,
+                    "status": "running",
+                    "message": "Pipeline 正在运行中，已等待 10 秒。请稍后查看结果。",
+                    "elapsed": 10,
+                }
+                exec_step.status = "ok"  # 标记为 ok，但不是 completed
+                exec_step.error = ""
+            except Exception as e:
+                exec_step.status = "error"
+                exec_step.error = str(e)
+        
         exec_step.finished_at = datetime.now()
         return exec_step
 
@@ -298,19 +386,47 @@ class TaskExecutor:
         # 检查最后一步是否失败
         last_step = log.steps[-1] if log.steps else None
         step_failed = last_step and last_step.status == "error"
+        
+        # 检查最后一步是否是条件步骤
+        is_condition_step = last_step and last_step.observation and isinstance(last_step.observation, dict) and last_step.observation.get("condition")
+        condition_info = ""
+        if is_condition_step:
+            condition = last_step.observation.get("condition", "")
+            condition_info = f"""
+
+⚠️ 注意：上一步是条件步骤！
+条件：{condition}
+
+请评估该条件是否满足：
+- 如果条件满足，建议 continue 执行该步骤对应的工具
+- 如果条件不满足，建议 modify 跳过该步骤或执行替代方案
+"""
+
         failure_info = ""
         if step_failed:
-            failure_info = f"\n\n⚠️ 注意：上一步执行失败！\n工具：{last_step.tool}\n错误：{last_step.error}\n参数：{json.dumps(last_step.params, ensure_ascii=False)}\n\n请决定：\n- 如果失败是因为缺少必要信息（如缺少 project_id），建议用 modify 生成获取信息的步骤\n- 如果失败是不可修复的（如项目不存在），建议 finish 并告知用户\n- 如果失败可以重试，建议 continue"
+            failure_info = f"""
+
+⚠️ 注意：上一步执行失败！
+工具：{last_step.tool}
+错误：{last_step.error}
+参数：{json.dumps(last_step.params, ensure_ascii=False)}
+
+请决定：
+- 如果失败是因为缺少必要信息（如缺少 project_id），建议用 modify 生成获取信息的步骤
+- 如果失败是不可修复的（如项目不存在），建议 finish 并告知用户
+- 如果失败可以重试，建议 continue
+"""
 
         system_prompt = f"""你是 DrugDesign Copilot Agent 的执行决策器。
 你的任务是根据已执行的步骤和观察结果，决定下一步行动。
 
 ## 可选决策
 1. "continue" - 继续执行计划中的下一步
-2. "modify" - 修改剩余计划（如修复失败、调整策略）
+2. "modify" - 修改剩余计划（如修复失败、调整策略、跳过条件不满足的步骤）
 3. "finish" - 计划已完成或无法继续，给出最终回答
 
 {f"## 当前状态：上一步失败，需要修复。" if step_failed else ""}
+{f"## 当前状态：需要评估条件步骤。" if is_condition_step else ""}
 
 ## 输出格式
 必须返回纯 JSON，不要 Markdown 代码块：
@@ -330,6 +446,7 @@ class TaskExecutor:
 
 当前环境状态：
 {env_text}
+{condition_info}
 {failure_info}
 
 请决定下一步行动（continue / modify / finish），并返回 JSON。"""
@@ -388,40 +505,13 @@ class TaskExecutor:
     # Helpers
     # ------------------------------------------------------------------
 
-    def _rate_limit(self):
-        """Ensure we don't hammer the LLM API."""
-        elapsed = time.time() - self._last_llm_call
-        if elapsed < self.llm_interval:
-            time.sleep(self.llm_interval - elapsed)
-        self._last_llm_call = time.time()
-
     def _call_llm(self, messages: List[Dict[str, str]]) -> str:
-        """Call the KIMI API."""
-        if not self.api_key:
-            return ""
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
-        payload = {
-            "model": self.model,
-            "messages": messages,
-            "temperature": self.temperature,
-        }
-        try:
-            resp = requests.post(
-                KIMI_API_URL, headers=headers, json=payload, timeout=60
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            return (
-                data.get("choices", [{}])[0]
-                .get("message", {})
-                .get("content", "")
-                .strip()
-            )
-        except Exception:
-            return ""
+        """调用 LLM（委托给 LLMClient，带重试）。"""
+        return self.llm.retry_call(messages, temperature=self.temperature, max_retries=2, base_delay=0.5)
+
+    def _rate_limit(self):
+        """Rate limit guard（向后兼容，实际逻辑在 LLMClient 中）。"""
+        pass
 
     def _parse_llm_decision(self, raw: str) -> Dict[str, Any]:
         """Parse LLM decision JSON."""
@@ -451,17 +541,116 @@ class TaskExecutor:
             "raw": raw,
         }
 
+    def _evaluate_condition(
+        self,
+        condition: str,
+        log: ExecutionLog,
+        env_state: Optional[Dict[str, Any]],
+    ) -> bool:
+        """
+        评估条件是否满足。
+        
+        策略：
+        1. 简单规则匹配（如分数比较、状态判断）
+        2. 复杂条件使用 LLM 评估
+        
+        Args:
+            condition: 条件描述字符串（如 "ADMET 分数 < 3"）
+            log: 当前执行日志
+            env_state: 环境状态
+        
+        Returns:
+            True if condition is met, False otherwise.
+        """
+        # 策略 1：简单数值比较（从最后一步结果中提取数值）
+        import re
+        
+        # 尝试从执行历史中提取数值进行比较
+        # 例如："ADMET 分数 < 3" → 查找 observation 中的 score 或 value
+        if log.steps:
+            last_obs = log.steps[-1].observation
+            if isinstance(last_obs, dict):
+                # 提取数值模式："x < y", "x > y", "x >= y", "x <= y"
+                numeric_match = re.search(r'([\w\s]+)\s*([<>=]+)\s*([\d\.]+)', condition)
+                if numeric_match:
+                    metric_name = numeric_match.group(1).strip().lower()
+                    operator = numeric_match.group(2).strip()
+                    threshold = float(numeric_match.group(3).strip())
+                    
+                    # 在 observation 中查找对应数值
+                    value = None
+                    for key in last_obs:
+                        if metric_name in key.lower() or key.lower() in metric_name:
+                            val = last_obs[key]
+                            if isinstance(val, (int, float)):
+                                value = float(val)
+                                break
+                    
+                    if value is not None:
+                        if operator == '<':
+                            return value < threshold
+                        elif operator == '>':
+                            return value > threshold
+                        elif operator == '<=':
+                            return value <= threshold
+                        elif operator == '>=':
+                            return value >= threshold
+                        elif operator == '==':
+                            return value == threshold
+        
+        # 策略 2：使用 LLM 评估复杂条件
+        # 构建提示，让 LLM 基于执行历史判断条件是否满足
+        history = self._format_execution_history(log)
+        env_text = json.dumps(env_state or {}, ensure_ascii=False, indent=2)
+        
+        prompt = f"""基于以下执行历史和环境状态，判断条件是否满足。
+
+条件："{condition}"
+
+已执行步骤：
+{history}
+
+环境状态：
+{env_text}
+
+请只回答 "true" 或 "false"，不要解释。"""
+        
+        raw = self.llm.retry_call([{"role": "user", "content": prompt}], temperature=0.0, max_retries=2, base_delay=0.5)
+        return "true" in raw.lower()
+
     def _format_execution_history(self, log: ExecutionLog) -> str:
-        """Format executed steps for LLM context."""
+        """Format executed steps for LLM context.
+        
+        当步骤超过 5 步时，对早期步骤做压缩摘要，只保留最近 3 步的完整信息。
+        """
         lines = []
-        for s in log.steps:
-            obs = self._serialize_obs(s.observation)
-            lines.append(
-                f"Step {s.step_number}: {s.tool}({json.dumps(s.params, ensure_ascii=False)})\n"
-                f"  Status: {s.status}\n"
-                f"  Observation: {obs}\n"
-                f"  Thought: {s.llm_thought}"
-            )
+        steps = log.steps
+        
+        if len(steps) > 5:
+            # 压缩早期步骤：只保留 tool + status
+            for s in steps[:-3]:
+                lines.append(f"Step {s.step_number}: {s.tool} → {s.status}")
+            
+            # 保留最近 3 步的完整信息
+            for s in steps[-3:]:
+                obs = self._serialize_obs(s.observation)
+                lines.append(
+                    f"Step {s.step_number}: {s.tool}({json.dumps(s.params, ensure_ascii=False)})\n"
+                    f"  Status: {s.status}\n"
+                    f"  Observation: {obs}\n"
+                    f"  Thought: {s.llm_thought}"
+                )
+        else:
+            # 步骤少，保留完整信息
+            for s in steps:
+                obs = self._serialize_obs(s.observation)
+                lines.append(
+                    f"Step {s.step_number}: {s.tool}({json.dumps(s.params, ensure_ascii=False)})\n"
+                    f"  Status: {s.status}\n"
+                    f"  Observation: {obs}\n"
+                    f"  Thought: {s.llm_thought}"
+                )
+        
         return "\n\n".join(lines) if lines else "（尚无执行步骤）"
 
     def _serialize_obs(self, obs: Any) -> Any:
