@@ -169,6 +169,21 @@ class LLMClient:
         Returns:
             Raw text content from LLM, or error message string.
         """
+        # Phase 5: 追踪 LLM 调用
+        tracer = None
+        step = None
+        try:
+            from .tracer import AgentTracer
+            tracer = AgentTracer.get_current()
+            if tracer:
+                step = tracer.start_step(
+                    step_type="llm_call",
+                    name=f"LLMCall({self.model})",
+                    input_data={"messages": str(messages)[:500], "temperature": temperature}
+                )
+        except Exception:
+            pass
+        
         if not self.api_key:
             return "API Key 未配置，无法调用 LLM 服务。"
         
@@ -201,6 +216,17 @@ class LLMClient:
                 completion_tokens=usage.get("completion_tokens", 0),
             )
             
+            # Phase 5: 完成追踪
+            if tracer and step:
+                step.finish(
+                    output={"content": content[:500]},
+                    token_usage={
+                        "prompt": usage.get("prompt_tokens", 0),
+                        "completion": usage.get("completion_tokens", 0),
+                        "total": usage.get("total_tokens", 0),
+                    }
+                )
+            
             return content
             
         except Exception as e:
@@ -208,6 +234,11 @@ class LLMClient:
             self._update_metrics(latency_ms=latency_ms, error=True)
             error_msg = f"LLM 调用失败: {e}"
             logger.error(error_msg)
+            
+            # Phase 5: 记录错误
+            if tracer and step:
+                step.finish(error=error_msg)
+            
             return error_msg
     
     def retry_call(

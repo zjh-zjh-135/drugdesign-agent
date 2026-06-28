@@ -395,3 +395,58 @@ def list_tools():
     registry = get_registry()
     tools = registry.list_tools()
     return jsonify({'success': True, 'tools': tools})
+
+
+# ========== Phase 5: 追踪查询接口 ==========
+
+@agent_bp.route('/agent/traces', methods=['GET'])
+def get_traces():
+    """
+    获取最近 Agent 执行追踪记录。
+    
+    Query params:
+        limit: 返回数量（默认 20）
+        session_id: 按会话过滤（可选）
+    """
+    from ..services.agent.tracer import get_recent_traces, get_trace_stats
+    
+    limit = request.args.get('limit', 20, type=int)
+    session_id = request.args.get('session_id')
+    
+    if session_id:
+        from ..services.agent.tracer import TraceStore
+        traces = TraceStore.get_traces_by_session(session_id, limit=limit)
+    else:
+        traces = get_recent_traces(limit=limit)
+    
+    stats = get_trace_stats()
+    
+    return jsonify({
+        'success': True,
+        'traces': traces,
+        'stats': stats,
+    })
+
+
+@agent_bp.route('/agent/traces/<trace_id>', methods=['GET'])
+def get_trace_detail(trace_id):
+    """获取单个追踪详情"""
+    from ..services.agent.tracer import get_trace
+    
+    trace = get_trace(trace_id)
+    if not trace:
+        return jsonify({'success': False, 'error': '追踪记录不存在'}), 404
+    
+    return jsonify({
+        'success': True,
+        'trace': trace,
+    })
+
+
+@agent_bp.route('/agent/traces', methods=['DELETE'])
+@rate_limit(max_requests=5, window_seconds=60)
+def clear_traces():
+    """清空所有追踪记录（需要确认）"""
+    from ..services.agent.tracer import clear_traces
+    clear_traces()
+    return jsonify({'success': True, 'message': '追踪记录已清空'})

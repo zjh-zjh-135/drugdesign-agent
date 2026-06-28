@@ -190,7 +190,7 @@ class ReActEngine:
 
     def run(self, user_message: str, context: Dict = None) -> Dict[str, Any]:
         """
-        主执行循环（增强版）。
+        主执行循环（增强版 + Phase 5 追踪）。
 
         流程：
         a. 意图解析（Intent Parsing）→ 理解用户复杂输入
@@ -201,71 +201,85 @@ class ReActEngine:
         f. 目标导向 → Perceive → Plan → Execute → Report
         """
         import uuid
-        trace_id = str(uuid.uuid4())[:8]  # 生成短 trace_id 用于请求追踪
+        trace_id = str(uuid.uuid4())[:8]
         
         context = context or {}
         context["trace_id"] = trace_id
         self.steps = []
 
-        # ===== 1. 意图解析 =====
-        try:
-            from .intent_parser import IntentParser, IntentType
-            parser = IntentParser(api_key=self.api_key, model=self.model)
-            parsed_intent = parser.parse(user_message, context)
-            intent_context = parser.build_planning_context(parsed_intent)
-        except Exception as e:
-            # 意图解析失败，回退到旧流程
-            parsed_intent = None
-            intent_context = {}
+        # Phase 5: 使用追踪器记录整个 ReAct 循环
+        from .tracer import AgentTracer
+        session_id = context.get("session_id")
+        project_id = context.get("project_id")
+        
+        with AgentTracer(session_id=session_id, user_message=user_message, project_id=project_id) as tracer:
+            # ===== 1. 意图解析 =====
+            try:
+                from .intent_parser import IntentParser, IntentType
+                parser = IntentParser(api_key=self.api_key, model=self.model)
+                parsed_intent = parser.parse(user_message, context)
+                intent_context = parser.build_planning_context(parsed_intent)
+                
+                if parsed_intent:
+                    tracer.set_intent(parsed_intent.intent_type.value if hasattr(parsed_intent.intent_type, 'value') else str(parsed_intent.intent_type))
+            except Exception as e:
+                parsed_intent = None
+                intent_context = {}
 
-        # ===== 2. 判断是否需要澄清 =====
-        if parsed_intent and parsed_intent.needs_clarification:
-            return {
-                "success": True,
-                "type": "clarification",
-                "final_answer": parsed_intent.clarification_question,
-                "action_cards": [],
-                "steps": [],
-                "autonomous": False,
-                "parsed_intent": intent_context if parsed_intent else None,
-                "trace_id": trace_id,
-            }
-
-        # ===== 3. 判断是否为简单聊天 =====
-        # 使用意图解析结果 + 传统方法双重判断
-        is_chat = self._is_simple_chat_enhanced(user_message, parsed_intent)
-        if is_chat.get("is_chat", False):
-            chat_response = self._generate_chat_response(user_message, context)
-            return {
-                "success": True,
-                "type": "chat",
-                "steps": [],
-                "final_answer": chat_response,
-                "action_cards": [],
-                "autonomous": False,
-                "parsed_intent": intent_context if parsed_intent else None,
-                "trace_id": trace_id,
-            }
-
-        # ===== 4. 判断是否需要表单 =====
-        form_check = self._needs_form(user_message, context, parsed_intent)
-        if form_check.get("needs_form", False):
-            result = self._build_form_response(form_check)
-            result["trace_id"] = trace_id
-            return result
-
-        # ===== 5. 多意图处理 =====
-        if parsed_intent and parsed_intent.primary_type == IntentType.MULTI_INTENT:
-            sub_intents = parser.split_multi_intent(parsed_intent)
-            if len(sub_intents) > 1:
-                result = self._execute_multi_intent(sub_intents, context, parser)
-                result["trace_id"] = trace_id
+            # ===== 2. 判断是否需要澄清 =====
+            if parsed_intent and parsed_intent.needs_clarification:
+                result = {
+                    "success": True,
+                    "type": "clarification",
+                    "final_answer": parsed_intent.clarification_question,
+                    "action_cards": [],
+                    "steps": [],
+                    "autonomous": False,
+                    "parsed_intent": intent_context if parsed_intent else None,
+                    "trace_id": trace_id,
+                }
+                tracer.finish(success=True, final_result=result)
                 return result
 
-        # ===== 6. 目标导向主流程 =====
-        result = self._execute_goal_oriented(user_message, context, intent_context)
-        result["trace_id"] = trace_id
-        return result
+            # ===== 3. 判断是否为简单聊天 =====
+            is_chat = self._is_simple_chat_enhanced(user_message, parsed_intent)
+            if is_chat.get("is_chat", False):
+                chat_response = self._generate_chat_response(user_message, context)
+                result = {
+                    "success": True,
+                    "type": "chat",
+                    "steps": [],
+                    "final_answer": chat_response,
+                    "action_cards": [],
+                    "autonomous": False,
+                    "parsed_intent": intent_context if parsed_intent else None,
+                    "trace_id": trace_id,
+                }
+                tracer.finish(success=True, final_result=result)
+                return result
+
+            # ===== 4. 判断是否需要表单 =====
+            form_check = self._needs_form(user_message, context, parsed_intent)
+            if form_check.get("needs_form", False):
+                result = self._build_form_response(form_check)
+                result["trace_id"] = trace_id
+                tracer.finish(success=True, final_result=result)
+                return result
+
+            # ===== 5. 多意图处理 =====
+            if parsed_intent and parsed_intent.primary_type == IntentType.MULTI_INTENT:
+                sub_intents = parser.split_multi_intent(parsed_intent)
+                if len(sub_intents) > 1:
+                    result = self._execute_multi_intent(sub_intents, context, parser)
+                    result["trace_id"] = trace_id
+                    tracer.finish(success=result.get("success", False), final_result=result)
+                    return result
+
+            # ===== 6. 目标导向主流程 =====
+            result = self._execute_goal_oriented(user_message, context, intent_context)
+            result["trace_id"] = trace_id
+            tracer.finish(success=result.get("success", False), final_result=result)
+            return result
 
     def _execute_goal_oriented(self, user_message: str, context: Dict, intent_context: Dict) -> Dict[str, Any]:
         """执行目标导向的工作流。"""

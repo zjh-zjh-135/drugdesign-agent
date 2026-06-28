@@ -334,19 +334,45 @@ class TaskExecutor:
         if tool_name == "wait_for_pipeline":
             return self._execute_wait_for_pipeline(func, params, exec_step)
 
-        # Execute with retry
+        # Execute with retry (Phase 5: 追踪工具执行)
         last_error = ""
+        tracer = None
+        trace_step = None
+        try:
+            from .tracer import AgentTracer
+            tracer = AgentTracer.get_current()
+        except Exception:
+            pass
+        
         for attempt in range(self.max_retries + 1):
+            # Phase 5: 开始追踪工具执行
+            if tracer:
+                trace_step = tracer.start_step(
+                    step_type="tool_execution",
+                    name=tool_name,
+                    input_data={"params": params, "reason": reason, "attempt": attempt + 1}
+                )
+            
             try:
                 result = func(**params)
                 exec_step.observation = result
                 exec_step.status = "ok"
                 exec_step.error = ""
+                
+                # Phase 5: 完成追踪
+                if tracer and trace_step:
+                    trace_step.finish(output={"status": "ok", "result_type": type(result).__name__})
+                
                 break
             except Exception as e:
                 last_error = str(e)
                 exec_step.status = "error"
                 exec_step.error = last_error
+                
+                # Phase 5: 记录错误
+                if tracer and trace_step:
+                    trace_step.finish(error=last_error)
+                
                 if attempt < self.max_retries:
                     time.sleep(1)
                 else:
