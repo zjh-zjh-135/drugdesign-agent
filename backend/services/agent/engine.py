@@ -494,10 +494,13 @@ class ReActEngine:
                     future = executor.submit(self._execute_goal_oriented, sub_intent.original_message, context, intent_context)
                     futures.append(future)
                 
-                for future in concurrent.futures.as_completed(futures):
-                    result = future.result()
-                    all_results.append(result)
-                    all_steps.extend(result.get("steps", []))
+                for future in concurrent.futures.as_completed(futures, timeout=60):
+                    try:
+                        result = future.result()
+                        all_results.append(result)
+                        all_steps.extend(result.get("steps", []))
+                    except concurrent.futures.TimeoutError:
+                        all_results.append({"success": False, "error": "子意图执行超时"})
         else:
             # 串行执行（原逻辑）
             for i, sub_intent in enumerate(sub_intents):

@@ -126,7 +126,18 @@ class TaskExecutor:
             "suggest_next_step", "get_molecule_details",
         }
 
+        MAX_EXECUTION_STEPS = 15  # P0修复: 防止LLM无限追加步骤
+        execution_counter = 0
+        
         while step_index < len(current_steps):
+            execution_counter += 1
+            if execution_counter > MAX_EXECUTION_STEPS:
+                # 执行步数超出上限，强制终止
+                log.final_answer = f"执行步数超出上限（{MAX_EXECUTION_STEPS}步），已强制终止。最后执行到第{step_index}步。"
+                log.success = False
+                log.finished_at = datetime.now()
+                break
+            
             step_def = current_steps[step_index]
             
             # 条件评估：如果步骤有条件，先评估
@@ -365,6 +376,9 @@ class TaskExecutor:
         except Exception:
             pass
         
+        # P0修复: 普通工具调用添加超时包装
+        import concurrent.futures
+        
         for attempt in range(self.max_retries + 1):
             # Phase 5: 开始追踪工具执行
             if tracer:
@@ -375,7 +389,11 @@ class TaskExecutor:
                 )
             
             try:
-                result = func(**params)
+                # 使用线程池执行工具，带超时
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                    future = pool.submit(func, **params)
+                    result = future.result(timeout=self.step_timeout)
+                
                 exec_step.observation = result
                 exec_step.status = "ok"
                 exec_step.error = ""
@@ -384,6 +402,16 @@ class TaskExecutor:
                 if tracer and trace_step:
                     trace_step.finish(output={"status": "ok", "result_type": type(result).__name__})
                 
+                break
+            except concurrent.futures.TimeoutError:
+                last_error = f"工具执行超时（超过{self.step_timeout}秒）"
+                exec_step.status = "timeout"
+                exec_step.error = last_error
+                
+                if tracer and trace_step:
+                    trace_step.finish(error=last_error)
+                
+                # 超时不重试，直接返回
                 break
             except Exception as e:
                 last_error = str(e)
@@ -703,10 +731,9 @@ class TaskExecutor:
         except (json.JSONDecodeError, ValueError, TypeError) as e:
             print(f"[条件评估] JSON解析失败: {e}, raw={raw[:100]}")
         
-        # 回退：简单的字符串匹配（last resort）
-        fallback = "true" in raw.lower() and "false" not in raw.lower()
-        print(f"[条件评估] 回退到字符串匹配: {fallback}")
-        return fallback
+        # 回退：解析失败时返回安全默认值 False（不执行条件步骤）
+        print(f"[条件评估] 解析失败，安全默认返回 False。raw={raw[:100]}")
+        return False
 
     def _format_execution_history(self, log: ExecutionLog) -> str:
         """Format executed steps for LLM context.
