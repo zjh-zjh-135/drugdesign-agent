@@ -358,6 +358,13 @@ class FEPRefiner:
     
     def _dock_single(self, smiles: str, receptor_pdb: str) -> float:
         """对单个分子进行 Vina 对接，返回最佳结合能"""
+        # P2修复: 验证受体PDB路径，防止路径遍历
+        if not receptor_pdb or '..' in receptor_pdb or receptor_pdb.startswith('/'):
+            # 只允许相对路径或白名单目录
+            import logging
+            logging.getLogger('fep').warning(f'Invalid receptor_pdb path rejected: {receptor_pdb}')
+            return 0
+        
         try:
             with tempfile.TemporaryDirectory() as tmpdir:
                 ligand_pdbqt = os.path.join(tmpdir, 'ligand.pdbqt')
