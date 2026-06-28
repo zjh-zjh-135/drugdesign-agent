@@ -2,11 +2,11 @@
 
 **审计日期**: 2026-06-28
 **审计范围**: 全项目代码（backend + frontend + 部署配置）
-**审计维度**: 安全、稳定性、AI Agent可靠性、数据一致性、前端安全、部署配置
-**总计风险**: 75项
+**审计维度**: 安全、稳定性、AI Agent可靠性、数据一致性、前端安全、部署配置、第三方依赖、密码学、日志安全、业务逻辑
+**总计风险**: 81项
 **P0（致命）**: 17项
-**P1（高危）**: 30项
-**P2（中危）**: 28项
+**P1（高危）**: 32项
+**P2（中危）**: 32项
 
 ---
 
@@ -99,7 +99,167 @@
 
 ---
 
-## 二、P1 高危风险（30项）—— 本周修复
+## 二、P1 高危风险（32项）—— 本周修复
+
+### 2.1 数据库事务不完整
+- **文件**: `backend/routes/admet.py`, `assay.py`, `molecules.py`, `projects.py`, `synthesis.py`, `generation.py`, `agent.py` 等
+- **风险**: 几乎所有写入路由只使用`try...finally`，缺少`except`中的`db.rollback()`。异常时事务未可靠回滚
+- **修复**: 统一改为`try...except...finally`结构
+
+### 2.2 SQLite外键约束未启用
+- **文件**: `backend/models/database.py:224`
+- **风险**: 默认`PRAGMA foreign_keys = OFF`，级联删除依赖ORM而非数据库
+- **修复**: 在`create_engine`时添加`connect_args={'timeout': 30}`
+
+### 2.3 批量删除导致孤儿数据
+- **文件**: `backend/services/pipeline.py:141-142, 161-164`
+- **风险**: `query.delete(synchronize_session=False)`绕过ORM级联，关联的`molecule_properties`、`admet_predictions`等成为孤儿数据
+- **修复**: 使用`for mol in query.all(): db.delete(mol)`替代批量删除
+
+### 2.4 Pipeline中断后僵尸状态
+- **文件**: `backend/services/pipeline.py:114-121`
+- **风险**: 进程崩溃后`PipelineRun`永远停留在`status='running'`，无心跳检测或超时恢复
+- **修复**: 启动时扫描`status='running' AND start_time < now - 1 hour`的记录并标记为`failed`
+
+### 2.5 重复数据插入风险
+- **文件**: `backend/routes/molecules.py`, `backend/services/pipeline.py:624-644`
+- **风险**: 插入前不检查SMILES是否已存在。`Project.name`未设置`unique=True`
+- **修复**: 添加唯一约束，插入前查询已存在记录
+
+### 2.6 Vina可执行路径可控
+- **文件**: `backend/services/docking.py:76, 277`
+- **风险**: `VINA_EXE`来自环境变量，被篡改可执行任意程序
+- **修复**: 对VINA_EXE做路径验证，只允许白名单目录
+
+### 2.7 服务器信息泄露
+- **文件**: `backend/routes/docking.py:183-196`
+- **风险**: `/docking/vina_status`公开返回Vina绝对路径及文件存在性
+- **修复**: 返回脱敏信息，不暴露绝对路径
+
+### 2.8 DoS风险
+- **文件**: `builder.py:503`, `docking.py:74`
+- **风险**: `pdb_content`/`smiles_list`无大小限制，超大输入可导致内存/CPU耗尽
+- **修复**: 添加大小限制（如10MB）
+
+### 2.9 弱示例密钥
+- **文件**: `.env.example:20`
+- **风险**: 硬编码`FLASK_SECRET_KEY=changeme...`，用户复制后易被伪造Session
+- **修复**: 在`create_app()`中检测弱密钥并抛出警告
+
+### 2.10 CSRF防护缺失
+- **文件**: `backend/app.py:32-39`
+- **风险**: `supports_credentials=True`但无CSRF Token
+- **修复**: 对写操作路由添加CSRF Token验证
+
+### 2.11 日志脱敏不完整
+- **文件**: `backend/utils/security.py:235`
+- **风险**: 仅排除`password/token/api_key/secret`，未覆盖`kimi_api_key`等变体
+- **修复**: 扩展脱敏关键词列表
+
+### 2.12 追踪数据明文存储
+- **文件**: `backend/services/agent/tracer.py:371`
+- **风险**: 敏感参数可能以明文写入`.traces/agent_traces.jsonl`
+- **修复**: 对敏感字段做脱敏处理
+
+### 2.13 审计日志无管理
+- **文件**: `backend/utils/security.py:40`
+- **风险**: 无查询接口、无自动清理、无加密
+- **修复**: 添加日志轮转和清理策略
+
+### 2.14 LIKE模糊查询性能/DoS
+- **文件**: `backend/services/pipeline.py:79`, `memory.py:257`
+- **风险**: `contains()`生成`%search%`，无长度限制，大数据量全表扫描
+- **修复**: 添加搜索长度限制，使用全文索引
+
+### 2.15 模块级init_db
+- **文件**: `backend/routes/pipeline.py:9`
+- **风险**: `SessionLocal = init_db()`在导入时执行，数据库故障导致应用无法启动
+- **修复**: 延迟初始化，首次请求时创建
+
+### 2.16 Session创建不一致
+- **文件**: `backend/routes/agent.py`等
+- **风险**: `get_db()`每次请求创建新engine，与`pipeline.py`全局`SessionLocal`混用
+- **修复**: 统一使用依赖注入的`get_db()`
+
+### 2.17 子进程不检查returncode
+- **文件**: `backend/services/admet.py:95-115`
+- **风险**: 不检查ADMET-AI子进程退出码，无法区分"无数据"和"子进程崩溃"
+- **修复**: 检查`proc.returncode != 0`时记录错误
+
+### 2.18 重试判断脆弱
+- **文件**: `backend/services/agent/llm_client.py:260-267`
+- **风险**: `result.startswith("LLM 调用失败")`判断成功/失败，格式变化即失效
+- **修复**: 使用异常类替代字符串匹配
+
+### 2.19 rate_limit_store内存泄漏
+- **文件**: `backend/utils/security.py:35, 121-125`
+- **风险**: 全局字典无上限，每次请求遍历所有key清理过期记录
+- **修复**: 使用TTL缓存库替代全局字典
+
+### 2.20 异常信息暴露
+- **文件**: `backend/routes/agent.py:145-146, 221-222`
+- **风险**: `return jsonify({'error': str(e)})`将原始异常返回客户端，可能泄露敏感路径
+- **修复**: 生产环境返回通用错误消息，详细错误记录日志
+
+### 2.21 临时目录清理失败静默忽略
+- **文件**: `backend/services/docking.py:298-304`
+- **风险**: `shutil.rmtree`失败被`except Exception: pass`吞没，长期磁盘泄漏
+- **修复**: 记录清理失败日志
+
+### 2.22 流式响应异常不完整
+- **文件**: `backend/routes/ai_chat.py:145-181`
+- **风险**: 异常时yield错误消息，但客户端可能仍等待SSE终止标记
+- **修复**: 确保异常时yield终止标记
+
+### 2.23 _is_simple_chat重复调用LLM
+- **文件**: `backend/services/agent/engine.py:665-744`
+- **风险**: 每次分类都调用`call_llM()`，消耗API配额和延迟
+- **修复**: 缓存分类结果，相同消息不重复调用
+
+### 2.24 清理操作无事务保护
+- **文件**: `backend/services/pipeline.py:130-169`
+- **风险**: `synchronize_session=False`的delete在异常中无日志，并发删除可能冲突
+- **修复**: 添加事务保护和日志
+
+### 2.25 上下文膨胀
+- **文件**: `backend/services/agent/executor.py:711-744`
+- **风险**: `_format_execution_history`将完整执行历史拼接为提示词，单条observation可能数千token
+- **修复**: observation限制到1000字符，大数组只保留前3个元素
+
+### 2.26 实例非线程安全
+- **文件**: `backend/services/agent/engine.py:988-1000`
+- **风险**: `_last_project_id`和`_last_target`无线程锁，多用户同时调用可能被覆盖
+- **修复**: 使用`threading.Lock()`保护或改为session级存储
+
+### 2.27 单例metrics竞争
+- **文件**: `backend/services/agent/llm_client.py:465-480`
+- **风险**: `metrics`通过`+=`实现，非原子操作，多线程并发时统计值竞争污染
+- **修复**: 使用`threading.Lock()`保护metrics更新
+
+### 2.28 追踪器全局覆盖
+- **文件**: `backend/services/agent/tracer.py:269`
+- **风险**: `_current_tracer`是类级变量，多线程下被最后一个线程覆盖
+- **修复**: 使用`threading.local()`存储当前tracer
+
+### 2.29 daemon线程不可靠
+- **文件**: `backend/services/agent/tools.py:226-252`
+- **风险**: `daemon=True`，主进程退出时强制终止，Pipeline可能执行到一半中断
+- **修复**: 使用Celery/RQ替代daemon线程
+
+### 2.30 新步骤未校验工具名
+- **文件**: `backend/services/agent/executor.py:174-181`
+- **风险**: `decision="modify"`时新步骤仅过滤`s.get("tool")`，未验证工具名是否在注册表中
+- **修复**: 对新步骤执行工具名校验
+
+### 2.31 第三方依赖漏洞（新增）
+- **文件**: `requirements.txt:1-17`
+- **风险**: `urllib3==2.2.0`存在CVE-2024-37891（代理授权头泄露），`pillow==10.2.0`存在多个漏洞，整体依赖未定期更新
+- **修复**: 升级`urllib3>=2.2.2`，`pillow>=10.3.0`，定期运行`pip-audit`
+
+### 2.32 端口绑定暴露在所有接口（新增）
+- **文件**: `docker-compose.yml:9`, `render.yaml:11`, `Dockerfile:31`, `app.py:87`, `run.py:39`
+- **风险**: `ports: - "5000:5000"`未绑定到`127.0.0.1`，`gunicorn -b 0.0.0.0:5000`暴露在所有接口，配合`debug=True`可能导致生产环境RCE
+- **修复**: Docker绑定`127.0.0.1:5000:5000`，生产环境`gunicorn -b 127.0.0.1:5000`
 
 ### 2.1 数据库事务不完整
 - **文件**: `backend/routes/admet.py`, `assay.py`, `molecules.py`, `projects.py`, `synthesis.py`, `generation.py`, `agent.py` 等
@@ -375,6 +535,26 @@
 - **风险**: `run()`无整体超时，任一阶段卡住则HTTP请求永久阻塞
 - **修复**: 添加120秒整体超时
 
+### 3.29 MD5弱哈希使用（密码学）
+- **文件**: `backend/services/agent/llm_client.py:458`
+- **风险**: 使用`hashlib.md5`生成缓存键，MD5属于密码学弱哈希
+- **修复**: 改用`hashlib.sha256`或`blake2b`
+
+### 3.30 日志文件无轮转（日志安全）
+- **文件**: `backend.log`（根目录）
+- **风险**: 无`RotatingFileHandler`，日志文件无限增长
+- **修复**: 添加日志轮转，最大10MB保留5个备份
+
+### 3.31 日志文件权限未限制（日志安全）
+- **文件**: `backend.log`
+- **风险**: Windows默认所有人可读，可能泄露敏感信息
+- **修复**: 限制文件权限为600
+
+### 3.32 删除操作缺少确认（业务逻辑）
+- **文件**: `backend/routes/projects.py:228`, `backend/routes/molecules.py:199`
+- **风险**: DELETE直接级联删除，无二次确认或软删除
+- **修复**: 添加软删除（deleted_at字段）或要求确认Token
+
 ---
 
 ## 四、修复优先级矩阵
@@ -382,9 +562,9 @@
 | 优先级 | 风险数 | 核心问题 | 预计工作量 |
 |--------|--------|----------|------------|
 | P0（立即） | 17 | 安全漏洞、无限循环、无超时、token溢出、并发缺陷 | ~40h |
-| P1（本周） | 30 | 事务不完整、外键缺失、僵尸任务、信息泄露、资源泄漏 | ~25h |
-| P2（后续） | 28 | 日志缺失、配置不一致、性能优化、代码错误 | ~15h |
-| **总计** | **75** | | **~80h** |
+| P1（本周） | 32 | 事务不完整、外键缺失、僵尸任务、信息泄露、依赖漏洞、端口暴露 | ~28h |
+| P2（后续） | 32 | 日志缺失、配置不一致、性能优化、代码错误、MD5弱哈希、日志无轮转 | ~18h |
+| **总计** | **81** | | **~86h** |
 
 ---
 
