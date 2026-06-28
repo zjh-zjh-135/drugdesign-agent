@@ -221,11 +221,12 @@ class LongTermMemory(Base):
 
 def init_db():
     # 增加SQLite超时，避免并发锁冲突
+    # P0修复: 使用NullPool替代StaticPool，避免多线程共享同一连接
     engine = create_engine(
         f'sqlite:///{DB_PATH}',
         echo=False,
         connect_args={'timeout': 30},
-        poolclass=StaticPool
+        poolclass=NullPool
     )
     Base.metadata.create_all(engine)
     

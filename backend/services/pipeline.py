@@ -46,8 +46,9 @@ class PipelineRunner:
         self.pipeline_run = None  # 初始化，避免AttributeError
     
     def _log(self, message: str):
-        """记录日志"""
-        self.logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] {message}")
+        """记录日志（线程安全）"""
+        with self._lock:
+            self.logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] {message}")
     
     def run(self) -> str:
         """启动Pipeline运行"""
@@ -111,12 +112,14 @@ class PipelineRunner:
             self._stage_synthesis()
             self._stage_output()
             
-            self.status = 'completed'
+            with self._lock:
+                self.status = 'completed'
             self._log("Pipeline完成")
             
         except Exception as e:
             import traceback
-            self.status = 'failed'
+            with self._lock:
+                self.status = 'failed'
             self._log(f"Pipeline失败: {str(e)}")
             self._log(traceback.format_exc())
             if hasattr(self, 'pipeline_run'):

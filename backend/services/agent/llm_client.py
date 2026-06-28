@@ -464,6 +464,7 @@ class LLMClient:
 # ---------------------------------------------------------------------------
 
 _DEFAULT_CLIENT: Optional[LLMClient] = None
+_CLIENT_LOCK = threading.Lock()
 
 
 def get_default_client(
@@ -471,14 +472,15 @@ def get_default_client(
     model: Optional[str] = None,
 ) -> LLMClient:
     """
-    获取默认 LLMClient 单例。
+    获取默认 LLMClient 单例（线程安全）。
     
     首次调用时创建，后续复用。
     """
     global _DEFAULT_CLIENT
-    if _DEFAULT_CLIENT is None:
-        _DEFAULT_CLIENT = LLMClient(api_key=api_key, model=model)
-    return _DEFAULT_CLIENT
+    with _CLIENT_LOCK:
+        if _DEFAULT_CLIENT is None:
+            _DEFAULT_CLIENT = LLMClient(api_key=api_key, model=model)
+        return _DEFAULT_CLIENT
 
 
 def reset_default_client() -> None:
