@@ -100,6 +100,12 @@ class AdmetPredictor:
             timeout=120
         )
         
+        # P1修复: 检查子进程退出码
+        if proc.returncode != 0:
+            import logging
+            logging.getLogger('admet').error(f'ADMET-AI subprocess failed (rc={proc.returncode}): {proc.stderr[:500]}')
+            return []
+        
         # 解析JSON输出（stdout最后一行是JSON）
         lines = [l for l in proc.stdout.strip().split('\n') if l.strip()]
         if not lines:

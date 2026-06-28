@@ -177,6 +177,8 @@ def chat_stream():
                             pass
             yield f"data: {json.dumps({'done': True})}\n\n"
         except Exception as e:
-            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+            # P1修复: 异常时也要发送done标记，确保客户端知道流已结束
+            yield f"data: {json.dumps({'error': '系统处理异常'})}\n\n"
+            yield f"data: {json.dumps({'done': True})}\n\n"
     
     return Response(generate(), mimetype='text/event-stream')

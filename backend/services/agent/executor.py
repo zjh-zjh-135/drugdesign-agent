@@ -739,33 +739,49 @@ class TaskExecutor:
         """Format executed steps for LLM context.
         
         当步骤超过 5 步时，对早期步骤做压缩摘要，只保留最近 3 步的完整信息。
+        P1修复: 限制observation和thought长度，防止上下文膨胀。
         """
         lines = []
         steps = log.steps
+        
+        def _truncate(text, max_len=500):
+            if isinstance(text, str) and len(text) > max_len:
+                return text[:max_len] + f'...[truncated {len(text)-max_len} chars]'
+            return text
         
         if len(steps) > 5:
             # 压缩早期步骤：只保留 tool + status
             for s in steps[:-3]:
                 lines.append(f"Step {s.step_number}: {s.tool} → {s.status}")
             
-            # 保留最近 3 步的完整信息
+            # 保留最近 3 步的完整信息（截断长内容）
             for s in steps[-3:]:
                 obs = self._serialize_obs(s.observation)
+                obs = _truncate(obs, 500)
+                thought = _truncate(s.llm_thought, 200)
+                params_str = json.dumps(s.params, ensure_ascii=False)
+                if len(params_str) > 300:
+                    params_str = params_str[:300] + '...[truncated]'
                 lines.append(
-                    f"Step {s.step_number}: {s.tool}({json.dumps(s.params, ensure_ascii=False)})\n"
+                    f"Step {s.step_number}: {s.tool}({params_str})\n"
                     f"  Status: {s.status}\n"
                     f"  Observation: {obs}\n"
-                    f"  Thought: {s.llm_thought}"
+                    f"  Thought: {thought}"
                 )
         else:
-            # 步骤少，保留完整信息
+            # 步骤少，保留完整信息（截断长内容）
             for s in steps:
                 obs = self._serialize_obs(s.observation)
+                obs = _truncate(obs, 500)
+                thought = _truncate(s.llm_thought, 200)
+                params_str = json.dumps(s.params, ensure_ascii=False)
+                if len(params_str) > 300:
+                    params_str = params_str[:300] + '...[truncated]'
                 lines.append(
-                    f"Step {s.step_number}: {s.tool}({json.dumps(s.params, ensure_ascii=False)})\n"
+                    f"Step {s.step_number}: {s.tool}({params_str})\n"
                     f"  Status: {s.status}\n"
                     f"  Observation: {obs}\n"
-                    f"  Thought: {s.llm_thought}"
+                    f"  Thought: {thought}"
                 )
         
         return "\n\n".join(lines) if lines else "（尚无执行步骤）"
