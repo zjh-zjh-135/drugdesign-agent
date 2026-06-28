@@ -680,10 +680,33 @@ class TaskExecutor:
 环境状态：
 {env_text}
 
-请只回答 "true" 或 "false"，不要解释。"""
+请用 JSON 格式回答，必须包含以下字段：
+{{"result": true 或 false, "reason": "简要解释为什么条件满足或不满足"}}"""
         
         raw = self.llm.retry_call([{"role": "user", "content": prompt}], temperature=0.0, max_retries=2, base_delay=0.5)
-        return "true" in raw.lower()
+        
+        # 尝试解析 JSON 响应
+        try:
+            # 提取 JSON 块（LLM 可能包裹在 Markdown 代码块中）
+            json_match = re.search(r'```json\s*\n(.*?)\n```', raw, re.DOTALL)
+            if json_match:
+                raw_json = json_match.group(1)
+            else:
+                raw_json = raw
+            
+            parsed = json.loads(raw_json)
+            if isinstance(parsed, dict) and "result" in parsed:
+                result = bool(parsed["result"])
+                reason = parsed.get("reason", "")
+                print(f"[条件评估] condition='{condition}' → result={result}, reason={reason}")
+                return result
+        except (json.JSONDecodeError, ValueError, TypeError) as e:
+            print(f"[条件评估] JSON解析失败: {e}, raw={raw[:100]}")
+        
+        # 回退：简单的字符串匹配（last resort）
+        fallback = "true" in raw.lower() and "false" not in raw.lower()
+        print(f"[条件评估] 回退到字符串匹配: {fallback}")
+        return fallback
 
     def _format_execution_history(self, log: ExecutionLog) -> str:
         """Format executed steps for LLM context.

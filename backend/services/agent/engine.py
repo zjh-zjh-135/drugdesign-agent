@@ -136,6 +136,47 @@ class ToolRegistry:
                 status="error",
                 error=f"工具 '{action.tool}' 未注册"
             )
+        
+        # 参数校验
+        schema = self._schemas.get(action.tool, {})
+        params_schema = schema.get("parameters", {})
+        if params_schema:
+            missing = []
+            type_errors = []
+            for param_name, param_info in params_schema.items():
+                # 检查必填
+                if param_info.get("required", False) and param_name not in action.params:
+                    missing.append(param_name)
+                # 检查类型
+                if param_name in action.params:
+                    val = action.params[param_name]
+                    expected_type = param_info.get("type", "")
+                    if expected_type == "integer" and not isinstance(val, int):
+                        type_errors.append(f"{param_name}: expected int, got {type(val).__name__}")
+                    elif expected_type == "number" and not isinstance(val, (int, float)):
+                        type_errors.append(f"{param_name}: expected number, got {type(val).__name__}")
+                    elif expected_type == "string" and not isinstance(val, str):
+                        type_errors.append(f"{param_name}: expected str, got {type(val).__name__}")
+                    elif expected_type == "array" and not isinstance(val, list):
+                        type_errors.append(f"{param_name}: expected list, got {type(val).__name__}")
+                    elif expected_type == "object" and not isinstance(val, dict):
+                        type_errors.append(f"{param_name}: expected dict, got {type(val).__name__}")
+            
+            if missing:
+                return Observation(
+                    action_id=action.id,
+                    result=None,
+                    status="error",
+                    error=f"工具 '{action.tool}' 缺少必填参数: {', '.join(missing)}"
+                )
+            if type_errors:
+                return Observation(
+                    action_id=action.id,
+                    result=None,
+                    status="error",
+                    error=f"工具 '{action.tool}' 参数类型错误: {'; '.join(type_errors)}"
+                )
+        
         try:
             result = func(**action.params)
             return Observation(action_id=action.id, result=result, status="ok")

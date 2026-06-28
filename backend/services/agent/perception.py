@@ -1,3 +1,4 @@
+import time
 """
 perception.py - Environment Perception Module
 

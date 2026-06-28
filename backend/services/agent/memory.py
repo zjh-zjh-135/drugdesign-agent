@@ -58,11 +58,38 @@ def get_conversation_history(db, session_id: str, limit: int = 20, max_tokens: i
         content_len = len(m.content) if m.content else 0
         total_chars += content_len
     
-    # 如果超出预算，只保留最近的消息
+    # 如果超出预算，对早期消息做摘要而非丢弃
     estimated_tokens = total_chars * 0.5
     if estimated_tokens > max_tokens and len(messages) > 5:
-        # 保留最近 5 条完整，其余丢弃
-        messages = messages[-5:]
+        # 保留最近 5 条完整，对早期消息做摘要
+        recent = messages[-5:]
+        early = messages[:-5]
+        
+        # 构建摘要：提取关键信息（项目创建、靶点设定、Pipeline启动等）
+        summary_parts = []
+        for m in early:
+            content = m.content or ""
+            # 识别关键消息类型
+            if "创建了项目" in content or "create_project" in content or "项目创建" in content:
+                summary_parts.append(f"创建了项目: {content[:100]}")
+            elif "靶点" in content and ("PDB" in content or "pdb" in content):
+                summary_parts.append(f"设定了靶点: {content[:100]}")
+            elif "Pipeline" in content or "pipeline" in content:
+                summary_parts.append(f"Pipeline操作: {content[:100]}")
+            elif len(content) > 20:
+                summary_parts.append(f"{content[:80]}...")
+        
+        if summary_parts:
+            summary_content = "【前文摘要】\n" + "\n".join(summary_parts[:10])
+            summary_msg = type('obj', (object,), {
+                'role': 'system',
+                'content': summary_content,
+                'metadata_json': None,
+                'created_at': early[-1].created_at if early else None
+            })()
+            messages = [summary_msg] + recent
+        else:
+            messages = recent
     
     return [
         {
