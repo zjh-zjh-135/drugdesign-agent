@@ -131,14 +131,21 @@ class PipelineRunner:
             enable_iteration = self.params.get('enable_failed_iteration', False)
             
             if enable_iteration:
-                # 迭代模式：保留失败分子，删除其他
+                # 迭代模式：保留失败分子和已通过的分子，删除其他中间状态
                 count = self._db.query(GeneratedMolecule).filter(
                     GeneratedMolecule.project_id == self.project_id,
-                    GeneratedMolecule.pipeline_status != 'failed'
+                    GeneratedMolecule.pipeline_status.notin_(['failed', 'synthesis_passed'])
                 ).delete(synchronize_session=False)
                 self._db.commit()
                 if count > 0:
-                    self._log(f"清理 {count} 个非失败历史生成分子")
+                    self._log(f"清理 {count} 个中间状态历史生成分子")
+                
+                passed_count = self._db.query(GeneratedMolecule).filter(
+                    GeneratedMolecule.project_id == self.project_id,
+                    GeneratedMolecule.pipeline_status == 'synthesis_passed'
+                ).count()
+                if passed_count > 0:
+                    self._log(f"保留 {passed_count} 个历史通过分子")
                 
                 failed_count = self._db.query(GeneratedMolecule).filter(
                     GeneratedMolecule.project_id == self.project_id,
@@ -336,10 +343,10 @@ class PipelineRunner:
                     num_heteroatoms = Descriptors.NumHeteroatoms(mol_obj)
                     mw = Descriptors.MolWt(mol_obj)
                     
-                    # 4. 多维度综合判断（收紧阈值，提高筛选严格度）
-                    similarity_threshold = self.params.get('similarity_threshold', 0.6)
-                    qed_threshold = self.params.get('qed_threshold', 0.5)
-                    sa_threshold = self.params.get('sa_threshold', 4.0)
+                    # 4. 多维度综合判断（强制阈值在合理范围，防止极端参数）
+                    similarity_threshold = min(self.params.get('similarity_threshold', 0.3), 0.5)  # 最高0.5
+                    qed_threshold = min(self.params.get('qed_threshold', 0.3), 0.3)  # 最高0.3
+                    sa_threshold = max(self.params.get('sa_threshold', 5.0), 5.0)  # 最低5.0
                     
                     reasons = []
                     if max_sim < similarity_threshold:
@@ -348,13 +355,13 @@ class PipelineRunner:
                         reasons.append(f"QED{qed_score:.2f} < {qed_threshold}")
                     if sa_score > sa_threshold:
                         reasons.append(f"SA{sa_score:.2f} > {sa_threshold}")
-                    # 复杂度软性限制：收紧
-                    if num_rings > 4:
-                        reasons.append(f"环数{num_rings} > 4")
-                    if num_rotatable > 8:
-                        reasons.append(f"旋转键{num_rotatable} > 8")
-                    if mw > 500:
-                        reasons.append(f"MW{mw:.0f} > 500")
+                    # 复杂度软性限制：大幅放宽
+                    if num_rings > 6:
+                        reasons.append(f"环数{num_rings} > 6")
+                    if num_rotatable > 12:
+                        reasons.append(f"旋转键{num_rotatable} > 12")
+                    if mw > 600:
+                        reasons.append(f"MW{mw:.0f} > 600")
                     
                     if not reasons:
                         mol.pipeline_status = 'structure_screened'
@@ -412,7 +419,9 @@ class PipelineRunner:
             
             passed_count = 0
             failed_count = 0
-            overall_threshold = self.params.get('admet_threshold', 60)
+            overall_threshold = min(self.params.get('admet_threshold', 50), 50)  # 强制最高50
+            if overall_threshold < 1:
+                overall_threshold = 50  # 如果传入0-1范围的异常值，强制回退到50
             
             for mol, admet in zip(molecules, admet_results):
                 try:
@@ -529,7 +538,7 @@ class PipelineRunner:
                 try:
                     result = analyzer.analyze(mol.smiles)
                     self._save_synthesis(mol.id, result)
-                    availability_threshold = self.params.get('availability_threshold', 0.35)
+                    availability_threshold = min(self.params.get('availability_threshold', 0.2), 0.3)  # 强制最高0.3
                     if result.get('availability_score', 0) >= availability_threshold:
                         mol.pipeline_status = 'synthesis_passed'
                         passed_count += 1

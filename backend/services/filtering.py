@@ -24,20 +24,18 @@ class MoleculeFilter:
         if thresholds is None:
             self.thresholds = self.DEFAULT_THRESHOLDS.copy()
         else:
-            # 智能合并：传入的参数不能覆盖默认值为更严格的值
-            # 这样可以防止旧项目存储的严格阈值覆盖新放宽的默认值
             merged = self.DEFAULT_THRESHOLDS.copy()
             for key, value in thresholds.items():
-                if key in merged and value is not None:
+                if value is None:
+                    continue
+                if key in merged:
                     if 'min' in key:
-                        # min 值取更小（更宽松）
-                        merged[key] = min(merged[key], value)
+                        merged[key] = min(merged[key], value)  # min取更小(更宽松)
                     elif 'max' in key:
-                        # max 值取更大（更宽松）
-                        merged[key] = max(merged[key], value)
+                        merged[key] = max(merged[key], value)  # max取更大(更宽松)
                     else:
                         merged[key] = value
-                elif value is not None:
+                else:
                     merged[key] = value
             self.thresholds = merged
 
