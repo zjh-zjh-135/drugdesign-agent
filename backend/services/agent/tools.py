@@ -234,7 +234,8 @@ def run_pipeline(project_id: int, num_molecules: int = 500,
             except Exception as e:
                 print(f"Pipeline run error: {e}")
         
-        thread = Thread(target=_run_async, daemon=True)
+        # P1修复: daemon=False确保Pipeline完成，主进程退出前等待线程完成
+        thread = Thread(target=_run_async, daemon=False)
         thread.start()
         
         return {
