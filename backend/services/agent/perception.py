@@ -45,7 +45,7 @@ class EnvironmentPerception:
             - timestamp
         """
         state = {
-            "timestamp": __import__("datetime").datetime.now().isoformat(),
+            "timestamp": datetime.now().isoformat(),
             "project_id": project_id,
             "available_tools": [t["name"] for t in self.tools.list_tools()],
         }

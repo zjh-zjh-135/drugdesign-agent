@@ -187,6 +187,10 @@ def batch_upload_molecules():
     if not smiles_list:
         return jsonify({'success': False, 'error': 'SMILES列表为空'}), 400
     
+    # P2修复: 限制批量大小，防止DoS
+    if len(smiles_list) > 100:
+        return jsonify({'success': False, 'error': 'SMILES列表最多100个'}), 413
+    
     db = _get_session()
     try:
         added = 0

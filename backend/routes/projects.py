@@ -271,6 +271,10 @@ def upload_active_molecules(project_id):
     if not molecules:
         return jsonify({'success': False, 'error': '分子列表为空'}), 400
     
+    # P2修复: 限制批量大小，防止DoS
+    if len(molecules) > 100:
+        return jsonify({'success': False, 'error': '分子列表最多100个'}), 413
+    
     db = _get_session()
     try:
         # 验证项目存在
