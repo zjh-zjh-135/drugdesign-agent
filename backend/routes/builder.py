@@ -503,7 +503,9 @@ def load_pocket():
     data = request.get_json() or {}
     pdb_content = data.get('pdb_content', '')
     
-    if not pdb_content:
+    # P1修复: DoS防护，限制PDB内容大小
+    if len(pdb_content) > 10 * 1024 * 1024:  # 10MB
+        return jsonify({'success': False, 'error': 'PDB内容过大，限制10MB'}), 413
         return jsonify({'success': False, 'error': 'PDB 内容为空'}), 400
     
     try:

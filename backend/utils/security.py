@@ -118,11 +118,31 @@ def rate_limit(max_requests=60, window_seconds=60):
             ip = get_client_ip()
             now = datetime.now()
             
-            # 清理过期记录
+            # 清理过期记录（P1修复: 限制清理频率和范围，防止内存泄漏）
             cutoff = now - timedelta(seconds=window_seconds)
-            for key in list(_rate_limit_store.keys()):
-                if _rate_limit_store[key]['reset'] < cutoff:
+            # 每100次请求做一次全量清理，其余只做增量清理
+            _cleanup_counter = getattr(rate_limit, '_cleanup_counter', 0) + 1
+            rate_limit._cleanup_counter = _cleanup_counter
+            
+            if _cleanup_counter % 100 == 0 or len(_rate_limit_store) > 10000:
+                # 全量清理或达到上限时强制清理
+                keys_to_remove = []
+                for key, record in list(_rate_limit_store.items()):
+                    if record['reset'] < cutoff:
+                        keys_to_remove.append(key)
+                    if len(keys_to_remove) > 1000:  # 单次最多清理1000条
+                        break
+                for key in keys_to_remove:
                     del _rate_limit_store[key]
+            elif len(_rate_limit_store) > 5000:
+                # 达到半量时做一次部分清理
+                oldest_keys = sorted(
+                    _rate_limit_store.keys(),
+                    key=lambda k: _rate_limit_store[k]['reset']
+                )[:500]
+                for key in oldest_keys:
+                    if _rate_limit_store[key]['reset'] < cutoff:
+                        del _rate_limit_store[key]
             
             # 检查限制
             key = f"{ip}:{request.endpoint}"
@@ -231,9 +251,15 @@ def audit_log(f):
                 import json
                 request_data = request.get_json(silent=True)
                 if request_data and isinstance(request_data, dict):
-                    # 脱敏：移除可能的敏感字段
+                    # 脱敏：移除可能的敏感字段（扩展关键词列表）
+                    SENSITIVE_FIELDS = {
+                        'password', 'token', 'api_key', 'secret', 'kimi_api_key',
+                        'apikey', 'api_secret', 'access_token', 'refresh_token',
+                        'auth_token', 'bearer', 'credential', 'private_key',
+                        'session_id', 'cookie', 'authorization', 'key'
+                    }
                     request_data = {k: v for k, v in request_data.items() 
-                                   if k not in ('password', 'token', 'api_key', 'secret')}
+                                   if k.lower() not in SENSITIVE_FIELDS}
                 
                 log_action(
                     endpoint=request.endpoint,

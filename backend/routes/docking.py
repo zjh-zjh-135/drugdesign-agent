@@ -76,6 +76,12 @@ def batch_dock():
     smiles_list = data.get('smiles_list', [])
     receptor_pdb = data.get('receptor_pdb')
     
+    # P1修复: DoS防护，限制批量大小和PDB大小
+    if len(smiles_list) > 100:
+        return jsonify({'success': False, 'error': 'SMILES列表最多100个'}), 413
+    if len(receptor_pdb) > 10 * 1024 * 1024:
+        return jsonify({'success': False, 'error': '受体PDB内容过大，限制10MB'}), 413
+    
     if not smiles_list:
         return jsonify({'success': False, 'error': 'SMILES列表为空'}), 400
     if not receptor_pdb:

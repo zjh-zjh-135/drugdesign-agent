@@ -143,7 +143,10 @@ def agent_chat():
         })
         
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        # P1修复: 生产环境不暴露原始异常，记录到日志
+        import logging
+        logging.getLogger('agent').error(f"Agent error: {e}", exc_info=True)
+        return jsonify({'success': False, 'error': '系统处理异常，请稍后重试'}), 500
     finally:
         db.close()
 
@@ -219,7 +222,10 @@ def agent_goal():
         })
         
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        # P1修复: 生产环境不暴露原始异常，记录到日志
+        import logging
+        logging.getLogger('agent').error(f"Agent error: {e}", exc_info=True)
+        return jsonify({'success': False, 'error': '系统处理异常，请稍后重试'}), 500
     finally:
         db.close()
 
@@ -317,7 +323,10 @@ def get_session_messages(session_id):
         messages = get_conversation_history(db, session_id, limit=50)
         return jsonify({'success': True, 'messages': messages})
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        # P1修复: 生产环境不暴露原始异常，记录到日志
+        import logging
+        logging.getLogger('agent').error(f"Agent error: {e}", exc_info=True)
+        return jsonify({'success': False, 'error': '系统处理异常，请稍后重试'}), 500
     finally:
         db.close()
 
