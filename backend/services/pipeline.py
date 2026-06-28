@@ -142,10 +142,11 @@ class PipelineRunner:
             
             if enable_iteration:
                 # 迭代模式：保留失败分子和已通过的分子，删除其他中间状态
+                # P1修复: 使用synchronize_session='fetch'替代False，确保会话状态一致
                 count = self._db.query(GeneratedMolecule).filter(
                     GeneratedMolecule.project_id == self.project_id,
                     GeneratedMolecule.pipeline_status.notin_(['failed', 'synthesis_passed'])
-                ).delete(synchronize_session=False)
+                ).delete(synchronize_session='fetch')
                 self._db.commit()
                 if count > 0:
                     self._log(f"清理 {count} 个中间状态历史生成分子")
@@ -165,9 +166,10 @@ class PipelineRunner:
                     self._log(f"保留 {failed_count} 个历史失败分子用于迭代学习")
             else:
                 # 传统模式：删除所有历史生成分子
+                # P1修复: 使用synchronize_session='fetch'替代False，确保会话状态一致
                 count = self._db.query(GeneratedMolecule).filter(
                     GeneratedMolecule.project_id == self.project_id
-                ).delete(synchronize_session=False)
+                ).delete(synchronize_session='fetch')
                 self._db.commit()
                 if count > 0:
                     self._log(f"清理 {count} 个历史生成分子")
