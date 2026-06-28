@@ -992,10 +992,10 @@ def run_full_pipeline(target_name: str, num_molecules: int = 1000,
     pipeline_run_id = pipeline_result.get("pipeline_run_id")
     print(f"[run_full_pipeline] Pipeline已启动: run_id={pipeline_run_id}")
     
-    # 4. 等待 Pipeline 完成（阻塞轮询，最多300秒）
+    # 4. 等待 Pipeline 完成（阻塞轮询，最多600秒/10分钟）
     wait_result = wait_for_pipeline(
         project_id=project_id,
-        max_wait_seconds=300,
+        max_wait_seconds=600,
         poll_interval=3
     )
     
@@ -1034,15 +1034,28 @@ def run_full_pipeline(target_name: str, num_molecules: int = 1000,
         )
     }
     
-    # 如果 pipeline 失败，标记成功但给出警告
-    if wait_result.get("status") == "failed":
+    # 如果 pipeline 失败或超时，给出明确提示
+    status = wait_result.get("status")
+    if status == "failed":
         final_result["success"] = False
         final_result["stage"] = "pipeline_failed"
         final_result["message"] = f"Pipeline运行失败。已生成{wait_result.get('num_generated', 0)}个分子，但筛选未通过。"
+    elif status == "timeout":
+        final_result["message"] = (
+            f"Pipeline已启动（生成{wait_result.get('num_generated', 0)}个分子），"
+            f"但仍在运行中（已等待{wait_result.get('elapsed_seconds', 0)}秒）。"
+            f"请稍后通过"项目状态"查看结果，或再次询问"AKT1的候选分子结果"。"
+        )
+        final_result["pipeline_running"] = True
+    else:
+        final_result["message"] = (
+            f"全流程完成。项目ID={project_id}，生成{wait_result.get('num_generated', 0)}个分子，"
+            f"通过{wait_result.get('num_passed', 0)}个，获得Top {len(top_molecules)}候选分子。"
+        )
     
     # 生成 Markdown 格式化报告
     final_result["final_report"] = _build_full_pipeline_report(final_result)
-
+    
     return final_result
 
 
