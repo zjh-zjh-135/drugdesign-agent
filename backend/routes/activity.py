@@ -84,7 +84,11 @@ def list_models():
 @activity_bp.route('/activity/models/<model_name>', methods=['DELETE'])
 def delete_model(model_name):
     """删除模型"""
-    import os
+    import os, re
+    
+    # P2修复: 验证模型名称格式
+    if not re.match(r'^[a-zA-Z0-9_-]+$', model_name) or len(model_name) > 64:
+        return jsonify({'success': False, 'error': '模型名称格式无效'}), 400
     
     # 删除所有匹配该模型名的文件
     deleted = []
