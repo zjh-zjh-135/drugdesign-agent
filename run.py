@@ -36,4 +36,4 @@ if __name__ == '__main__':
     print("  访问: http://localhost:5000")
     print("  API:  http://localhost:5000/api/health")
     print("=" * 60)
-    app.run(host='0.0.0.0', port=5000, debug=True, threaded=True)
+    app.run(host='0.0.0.0', port=5000, debug=False, threaded=True)

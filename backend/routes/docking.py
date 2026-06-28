@@ -1,4 +1,5 @@
 """分子对接路由"""
+import os
 from flask import Blueprint, request, jsonify
 from ..models.database import GeneratedMolecule, Project, init_db
 from ..services.docking import run_docking, batch_docking

@@ -122,6 +122,7 @@ class LLMClient:
             openai_api_base=self.api_url.replace("/chat/completions", ""),  # 去掉路径后缀
             request_timeout=self.timeout,
             temperature=0.7,
+            max_tokens=4096,
             max_retries=0,  # 我们自己处理重试，更精细
             # 可选：启用流式输出
             streaming=False,
