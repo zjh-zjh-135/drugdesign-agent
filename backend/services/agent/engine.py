@@ -742,6 +742,13 @@ Final Answer: [给用户的完整回答]
                 return {"is_chat": False, "reason": f"匹配操作模式：{pattern}"}
         
         # P4: LLM 智能分析（最准确但耗时）
+        # P1修复: 检查缓存，避免重复调用LLM
+        cache_key = message.strip()[:100]  # 取前100字符作为缓存key
+        with self._chat_cache_lock:
+            cached = self._chat_classification_cache.get(cache_key)
+            if cached:
+                return cached
+        
         prompt = (
             '你是消息分类助手。判断以下消息是"简单聊天"还是"目标导向操作请求"。\n'
             '简单聊天：询问知识、打招呼、闲聊、表达观点\n'
@@ -760,14 +767,29 @@ Final Answer: [给用户的完整回答]
                 # LLM 高置信度时直接采用
                 confidence = parsed.get("confidence", 0.5)
                 if confidence >= 0.7:
+                    # 存入缓存
+                    with self._chat_cache_lock:
+                        if len(self._chat_classification_cache) >= self._chat_cache_max_size:
+                            self._chat_classification_cache.pop(next(iter(self._chat_classification_cache)))
+                        self._chat_classification_cache[cache_key] = parsed
                     return parsed
                 # 低置信度时保守处理（默认聊天，避免误操作）
-                return {"is_chat": True, "reason": f"LLM 低置信度({confidence})，保守处理为聊天"}
+                result = {"is_chat": True, "reason": f"LLM 低置信度({confidence})，保守处理为聊天"}
+                with self._chat_cache_lock:
+                    if len(self._chat_classification_cache) >= self._chat_cache_max_size:
+                        self._chat_classification_cache.pop(next(iter(self._chat_classification_cache)))
+                    self._chat_classification_cache[cache_key] = result
+                return result
         except Exception:
             pass
         
         # P5: 最终 fallback——保守处理（默认聊天，避免误操作）
-        return {"is_chat": True, "reason": "无法判断，保守处理为聊天"}
+        result = {"is_chat": True, "reason": "无法判断，保守处理为聊天"}
+        with self._chat_cache_lock:
+            if len(self._chat_classification_cache) >= self._chat_cache_max_size:
+                self._chat_classification_cache.pop(next(iter(self._chat_classification_cache)))
+            self._chat_classification_cache[cache_key] = result
+        return result
 
     def _generate_chat_response(self, message: str, context: Dict) -> str:
         """Generate a simple chat response using the LLM."""
@@ -1025,6 +1047,11 @@ class CopilotAgent:
         self._last_project_id: Optional[int] = None
         self._last_target: Optional[str] = None
         self._memory_lock = threading.Lock()
+        
+        # P1修复: 缓存聊天分类结果，避免重复调用LLM
+        self._chat_classification_cache: Dict[str, Dict] = {}
+        self._chat_cache_lock = threading.Lock()
+        self._chat_cache_max_size = 100
 
     def _register_default_tools(self):
         """注册默认工具（占位，实际工具在 tools.py 中定义）"""
