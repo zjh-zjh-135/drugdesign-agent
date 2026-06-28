@@ -574,6 +574,7 @@ def suggest_next_step(project_id: int, current_stage: str = "unknown") -> Dict:
     }
 )
 def get_failed_molecules(project_id: int, stage: str = None, limit: int = 50) -> Dict:
+    limit = max(1, min(int(limit), 500))
     """获取失败分子"""
     from ...models.database import GeneratedMolecule
     db = _get_db()
