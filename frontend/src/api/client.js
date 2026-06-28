@@ -3,45 +3,39 @@ import axios from 'axios'
 // 生产环境自动检测 API 地址
 const getBaseURL = () => {
   if (import.meta.env.PROD) {
-    // 生产环境：使用完整后端 URL
-    // 部署时替换为实际后端地址，例如：
-    // return 'https://drugdesign-api.onrender.com/api'
     return import.meta.env.VITE_API_URL || '/api'
   }
-  // 开发环境：使用 Vite 代理
   return '/api'
 }
 
 const client = axios.create({
   baseURL: getBaseURL(),
-  timeout: 600000,
+  timeout: 30000,  // P2修复: 默认30秒，长任务单独设置
   headers: {
     'Content-Type': 'application/json'
   }
 })
 
-// 请求拦截器
+// P2修复: 从localStorage读取API Key并添加到请求头
 client.interceptors.request.use(
   (config) => {
-    console.log('API请求:', config.method.toUpperCase(), config.url)
+    const apiKey = localStorage.getItem('api_key')
+    if (apiKey) {
+      config.headers['X-API-Key'] = apiKey
+    }
     return config
   },
-  (error) => {
-    console.error('请求错误:', error)
-    return Promise.reject(error)
-  }
+  (error) => Promise.reject(error)
 )
 
-// 响应拦截器
+// 响应拦截器（P2修复: 统一处理401认证错误）
 client.interceptors.response.use(
-  (response) => {
-    const data = response.data
-    if (!data.success) {
-      console.error('API返回错误:', data.error)
-    }
-    return response
-  },
+  (response) => response,
   (error) => {
+    if (error.response?.status === 401) {
+      console.error('认证失败: 请提供有效的 API Key')
+      // 可选: 触发登录/重新认证提示
+    }
     const message = error.response?.data?.error || error.message || '网络错误'
     console.error('API错误:', message)
     return Promise.reject(error)
@@ -96,11 +90,6 @@ export const api = {
   runPipeline: (data) => client.post('/pipeline/run', data),
   getPipelineStatus: (runId) => client.get(`/pipeline/status/${runId}`),
   getPipelineResults: (runId, params) => client.get(`/pipeline/results/${runId}`, { params }),
-
-  // 3D结构
-  getMoleculeStructure: (id, format = 'sdf') => `/api/molecules/${id}/structure?format=${format}`,
-  getMoleculeStructure3d: (id) => client.get(`/molecules/${id}/structure3d`),
-  getStructureFromSmiles: (data) => client.post('/molecules/structure/from_smiles', data),
 
   // 3D结构
   getMoleculeStructure: (id, format = 'sdf') => `/api/molecules/${id}/structure?format=${format}`,
