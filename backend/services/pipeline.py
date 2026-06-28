@@ -76,12 +76,15 @@ class PipelineRunner:
                 if self.pipeline_run:
                     self.pipeline_run.status = 'running'
                     self.pipeline_run.params_json = self.params
+                    if not self.pipeline_run.start_time:
+                        self.pipeline_run.start_time = datetime.now()
                     self._db.commit()
             
             if not self.pipeline_run:
                 self.pipeline_run = PipelineRun(
                     project_id=self.project_id,
                     status='running',
+                    start_time=datetime.now(),
                     num_generated=0,
                     num_filtered=0,
                     num_passed=0,

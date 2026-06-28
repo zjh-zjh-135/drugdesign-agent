@@ -185,9 +185,11 @@ def run_pipeline(project_id: int, num_molecules: int = 500,
         
         # 创建 PipelineRun 记录
         from ...models.database import PipelineRun
+        from datetime import datetime
         pipeline_run = PipelineRun(
             project_id=project_id,
             status='pending',
+            start_time=datetime.now(),
             params_json=params
         )
         db.add(pipeline_run)
