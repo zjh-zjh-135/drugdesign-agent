@@ -122,11 +122,30 @@ class TaskPlanner:
         if intent_context.get("conditions") and not any("condition" in s for s in steps):
             steps = self._inject_conditions(steps, intent_context.get("conditions", []))
 
+        # 参数校验：确保每个 step 引用的工具都是已注册的
+        available_tool_names = {t.get("name", "") for t in (available_tools or [])}
+        validated_steps = []
+        for s in steps:
+            tool_name = s.get("tool", "")
+            if tool_name and tool_name not in available_tool_names and tool_name not in ("condition", "suggest_next_step"):
+                # 记录错误但不终止，将 step 标记为无效
+                logger.warning(f"Planner 生成了未注册的工具: {tool_name}，跳过此步骤")
+                continue
+            validated_steps.append(s)
+        
+        # 如果所有步骤都被过滤掉了，回退到 suggest_next_step
+        if not validated_steps:
+            validated_steps = [{
+                "tool": "suggest_next_step",
+                "params": {"project_id": project_id} if project_id else {},
+                "reason": "未找到可用的工具来执行该目标，建议下一步操作",
+            }]
+        
         return {
             "success": True,
             "goal": goal,
             "project_id": project_id,
-            "steps": steps,
+            "steps": validated_steps,
             "summary": parsed.get("summary", "未提供摘要"),
             "raw_response": raw_response,
             "intent_context": intent_context,
