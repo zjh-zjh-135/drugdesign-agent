@@ -30,6 +30,9 @@ class Project(Base):
     generated_molecules = relationship("GeneratedMolecule", back_populates="project", cascade="all, delete-orphan")
     pipeline_runs = relationship("PipelineRun", back_populates="project", cascade="all, delete-orphan")
     assay_results = relationship("AssayResult", back_populates="project", cascade="all, delete-orphan")
+    agent_sessions = relationship("AgentSession", back_populates="project", cascade="all, delete-orphan")
+    agent_memories = relationship("AgentMemory", back_populates="project", cascade="all, delete-orphan")
+    long_term_memories = relationship("LongTermMemory", back_populates="project", cascade="all, delete-orphan")
 
 class ActiveMolecule(Base):
     __tablename__ = 'active_molecules'
@@ -137,7 +140,7 @@ class PipelineRun(Base):
     params_json = Column(JSON)
     
     project = relationship("Project", back_populates="pipeline_runs")
-    generated_molecules = relationship("GeneratedMolecule", back_populates="pipeline_run")
+    generated_molecules = relationship("GeneratedMolecule", back_populates="pipeline_run", cascade="all, delete-orphan")
 
 class AssayResult(Base):
     """实验验证结果 - 数据回流核心表"""
@@ -175,7 +178,7 @@ class AgentSession(Base):
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
     
     messages = relationship("AgentMessage", back_populates="session", cascade="all, delete-orphan")
-    project = relationship("Project")
+    project = relationship("Project", back_populates="agent_sessions")
 
 class AgentMessage(Base):
     """Agent 消息表 - 对话历史"""
@@ -201,7 +204,7 @@ class AgentMemory(Base):
     importance = Column(Integer, default=1)
     created_at = Column(DateTime, default=datetime.now)
     
-    project = relationship("Project")
+    project = relationship("Project", back_populates="agent_memories")
 
 class LongTermMemory(Base):
     """长期记忆表 - Long-term Memory"""
@@ -215,9 +218,8 @@ class LongTermMemory(Base):
     use_count = Column(Integer, default=0)
     last_accessed = Column(DateTime, default=datetime.now)
     created_at = Column(DateTime, default=datetime.now)
-
-
-# ========== 数据库迁移 ==========
+    
+    project = relationship("Project", back_populates="long_term_memories")
 
 def init_db():
     # 增加SQLite超时，避免并发锁冲突
