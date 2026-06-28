@@ -164,8 +164,13 @@ def dock_from_smiles():
 def fetch_pdb_from_rcsb(pdb_id):
     """从RCSB PDB下载受体结构"""
     import urllib.request
+    import re
     
     pdb_id = pdb_id.upper().strip()
+    # P2修复: 验证PDB ID格式（只允许4字符字母数字）
+    if not re.match(r'^[A-Z0-9]{4}$', pdb_id):
+        return jsonify({'success': False, 'error': 'PDB ID格式无效（应为4字符字母数字）'}), 400
+    
     url = f'https://files.rcsb.org/download/{pdb_id}.pdb'
     
     try:
