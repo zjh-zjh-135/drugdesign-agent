@@ -198,7 +198,7 @@ def get_vina_status():
         'success': True,
         'data': {
             'available': available,
-            'path': VINA_EXE,
-            'path_exists': os.path.exists(VINA_EXE),
+            # P1修复: 不暴露绝对路径和文件系统信息
+            'path': os.path.basename(VINA_EXE) if VINA_EXE else None,
         }
     })

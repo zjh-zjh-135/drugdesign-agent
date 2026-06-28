@@ -27,6 +27,13 @@ def create_app():
     # 生成密钥（用于 Session 签名等）
     app.secret_key = os.environ.get('FLASK_SECRET_KEY', os.urandom(32))
     
+    # P1修复: 检测弱密钥并发出警告
+    secret = app.secret_key if isinstance(app.secret_key, str) else app.secret_key.decode('utf-8', errors='ignore')
+    WEAK_KEYWORDS = ['changeme', '123456', 'password', 'secret', 'default', 'admin']
+    if any(kw in secret.lower() for kw in WEAK_KEYWORDS) or len(secret) < 16:
+        import logging
+        logging.getLogger('app').warning('SECURITY WARNING: Flask secret_key appears weak. Please set a strong FLASK_SECRET_KEY environment variable.')
+    
     # CORS 配置：仅允许指定来源（默认 localhost:5173）
     # 可通过环境变量 CORS_ORIGINS 配置多个来源，逗号分隔
     CORS(app, resources={

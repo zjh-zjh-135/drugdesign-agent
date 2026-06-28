@@ -6,7 +6,9 @@ services:
     container_name: drugdesign-agent
     restart: unless-stopped
     ports:
-      - "5000:5000"
+      # P1修复: 仅绑定到127.0.0.1，防止直接暴露在公网
+      # 生产环境应使用Nginx/Traefik反向代理
+      - "127.0.0.1:5000:5000"
     environment:
       - FLASK_ENV=production
       - KIMI_API_KEY=${KIMI_API_KEY}
