@@ -28,6 +28,7 @@ Usage:
 
 import json
 import os
+import threading
 import time
 import uuid
 import logging
@@ -266,7 +267,7 @@ class AgentTracer:
     使用上下文管理器记录整个 ReAct 循环的执行轨迹。
     """
     
-    _current_tracer: Optional["AgentTracer"] = None
+    _thread_local = threading.local()
     
     def __init__(self, session_id: str = None, user_message: str = "", project_id: int = None):
         self.trace = AgentTrace(
@@ -279,7 +280,7 @@ class AgentTracer:
     
     def __enter__(self):
         """进入上下文，开始追踪"""
-        AgentTracer._current_tracer = self
+        AgentTracer._thread_local.current = self
         return self
     
     def __exit__(self, exc_type, exc_val, exc_tb):
@@ -290,7 +291,7 @@ class AgentTracer:
             self.trace.finish(success=True)
         
         TraceStore.save(self.trace)
-        AgentTracer._current_tracer = None
+        AgentTracer._thread_local.current = None
         return False
     
     def start_step(self, step_type: str, name: str, input_data: Dict = None) -> TraceStep:
@@ -330,8 +331,8 @@ class AgentTracer:
     
     @classmethod
     def get_current(cls) -> Optional["AgentTracer"]:
-        """获取当前活跃的追踪器（用于跨函数调用）"""
-        return cls._current_tracer
+        """获取当前线程的追踪器（用于跨函数调用）。"""
+        return getattr(cls._thread_local, 'current', None)
 
 
 # ============================================================================
