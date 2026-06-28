@@ -6,7 +6,15 @@ from ..models.database import init_db, PipelineRun, GeneratedMolecule, MoleculeP
 from ..services.pipeline import PipelineRunner
 
 pipeline_bp = Blueprint('pipeline', __name__, url_prefix='/api')
-SessionLocal = init_db()
+
+# P1修复: 延迟初始化SessionLocal，避免导入时数据库故障导致应用无法启动
+_SessionLocal = None
+
+def _get_session():
+    global _SessionLocal
+    if _SessionLocal is None:
+        _SessionLocal = init_db()
+    return __get_session()
 
 @pipeline_bp.route('/pipeline/run', methods=['POST'])
 def run_pipeline():
@@ -46,7 +54,7 @@ def get_pipeline_results(run_id):
     """获取Pipeline结果"""
     top_n = int(request.args.get('top_n', 50))
     
-    db = SessionLocal()
+    db = _get_session()
     try:
         results = PipelineRunner.get_results(run_id, db, top_n)
         return jsonify({'success': True, 'data': results})
@@ -64,7 +72,7 @@ def get_failed_molecules(project_id):
     stage = request.args.get('stage')  # 按失败阶段筛选
     search = request.args.get('search')  # 关键词搜索
     
-    db = SessionLocal()
+    db = _get_session()
     try:
         query = db.query(GeneratedMolecule).filter(
             GeneratedMolecule.project_id == project_id,
@@ -113,7 +121,7 @@ def get_failed_molecules(project_id):
 @pipeline_bp.route('/projects/<int:project_id>/failed-analysis', methods=['GET'])
 def get_failed_analysis(project_id):
     """获取失败数据分析报告 - 各阶段统计、常见原因"""
-    db = SessionLocal()
+    db = _get_session()
     try:
         # 1. 各阶段失败统计
         stage_stats = db.query(
@@ -183,7 +191,7 @@ def get_failed_analysis(project_id):
 @pipeline_bp.route('/projects/<int:project_id>/failed-molecules/<int:molecule_id>', methods=['GET'])
 def get_failed_molecule_detail(project_id, molecule_id):
     """获取单个失败分子的详细原因"""
-    db = SessionLocal()
+    db = _get_session()
     try:
         mol = db.query(GeneratedMolecule).filter(
             GeneratedMolecule.id == molecule_id,
