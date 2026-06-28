@@ -36,6 +36,12 @@ def load_prompt(name: str, version: str = "latest") -> "PromptTemplate":
     Returns:
         PromptTemplate 对象，支持 format() 方法
     """
+    # P2修复: 验证模板名称和版本，防止路径遍历
+    if not re.match(r'^[a-zA-Z0-9_-]+$', name):
+        raise ValueError(f"Invalid prompt name: {name}")
+    if version != "latest" and not re.match(r'^[a-zA-Z0-9_.-]+$', version):
+        raise ValueError(f"Invalid prompt version: {version}")
+    
     if version == "latest":
         path = os.path.join(_PROMPT_DIR, f"{name}.yaml")
     else:
