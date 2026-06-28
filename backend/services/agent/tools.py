@@ -906,3 +906,99 @@ def analyze_single_molecule_admet(smiles: str) -> Dict:
             "error": str(e),
             "message": f"ADMET 分析失败: {e}"
         }
+
+
+# ============================================================================
+# Phase 2: LangChain 工具兼容层（新增，不影响原有代码）
+# ============================================================================
+
+"""
+LangChain 工具标准化接口
+
+在原有工具基础上，提供 LangChain 兼容的 Tool 对象，
+可接入 LangChain Agent、Chain 等生态组件。
+
+原有接口（register_tool / get_registry）完全保留，前端无感知。
+"""
+
+from typing import Callable
+from pydantic import BaseModel, Field
+
+# 延迟导入 LangChain（避免循环依赖）
+_lc_tools_available = False
+try:
+    from langchain.tools import tool as lc_tool_decorator
+    from langchain.tools import BaseTool as LCBaseTool
+    _lc_tools_available = True
+except ImportError:
+    pass
+
+
+def _tool_wrapper(func: Callable, name: str, description: str) -> Callable:
+    """包装工具函数为 LangChain 兼容格式。
+    
+    LangChain 的 @tool 期望函数返回字符串，但我们的工具返回 dict。
+    这里统一将 dict 转为 JSON 字符串。
+    """
+    def wrapped(*args, **kwargs):
+        result = func(*args, **kwargs)
+        if isinstance(result, dict):
+            return json.dumps(result, ensure_ascii=False, default=str)
+        return str(result)
+    
+    wrapped.__name__ = func.__name__
+    wrapped.__doc__ = description or func.__doc__
+    return wrapped
+
+
+def to_langchain_tools() -> list:
+    """
+    将现有工具注册表转换为 LangChain Tool 列表。
+    
+    Returns:
+        List[BaseTool]: LangChain 兼容的工具对象列表
+    """
+    if not _lc_tools_available:
+        logger.warning("LangChain tools not available, skipping conversion")
+        return []
+    
+    tools = []
+    registry = get_registry()
+    
+    for name, func in registry._tools.items():
+        schema = registry._schemas.get(name, {})
+        description = schema.get("description", f"Tool: {name}")
+        
+        # 包装函数为字符串返回
+        wrapped = _tool_wrapper(func, name, description)
+        
+        # 使用 LangChain 的 @tool 装饰器
+        tool_obj = lc_tool_decorator(wrapped)
+        tools.append(tool_obj)
+    
+    return tools
+
+
+# ── 直接导出关键工具（供 LangChain 直接使用）──
+# 这些工具保留原有 dict 返回格式，供内部代码使用
+# LangChain 外部使用 to_langchain_tools() 获取字符串版本
+
+__all__ = [
+    # 原有接口
+    "get_registry",
+    "register_tool",
+    # Phase 2 新增
+    "to_langchain_tools",
+    # 工具函数（保留原有导出）
+    "create_project",
+    "list_projects",
+    "run_pipeline",
+    "analyze_failures",
+    "adjust_filters",
+    "get_project_status",
+    "compare_molecules",
+    "suggest_next_step",
+    "get_failed_molecules",
+    "get_top_molecules",
+    "analyze_single_molecule_admet",
+]

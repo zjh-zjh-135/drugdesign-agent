@@ -1,0 +1,22 @@
+name: planner_user
+version: "1.0"
+description: "任务规划器的用户提示词模板"
+
+variables:
+  - goal
+  - project_id
+  - env_text
+  - intent_text
+
+messages:
+  - role: user
+    content: |
+      用户目标：{goal}
+
+      项目ID：{project_id}
+
+      当前环境状态：
+      {env_text}
+      {intent_text}
+
+      请基于以上信息，生成一个执行计划（纯 JSON 格式）。如果意图解析结果中有条件要求，请在对应步骤的 condition 字段中标记。

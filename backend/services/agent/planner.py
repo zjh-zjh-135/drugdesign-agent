@@ -71,8 +71,29 @@ class TaskPlanner:
         available_tools = available_tools or []
         intent_context = intent_context or {}
 
-        system_prompt = self._build_system_prompt(available_tools, intent_context)
-        user_prompt = self._build_user_prompt(goal, project_id, env_state, intent_context)
+        # Phase 4: 使用 Prompt 模板加载系统提示词和用户提示词
+        try:
+            from .prompts import load_planner_prompts
+            tools_desc = self._build_tools_description(available_tools)
+            system_prompt, user_template = load_planner_prompts(
+                tools_desc=tools_desc,
+                intent_context=intent_context,
+                max_steps=self.max_steps,
+            )
+            # 用户提示词需要额外格式化
+            env_text = json.dumps(env_state, ensure_ascii=False, indent=2)
+            intent_text = self._build_intent_text(intent_context)
+            user_prompt = user_template.format(
+                goal=goal,
+                project_id=project_id if project_id else "未指定",
+                env_text=env_text,
+                intent_text=intent_text,
+            )
+        except Exception as e:
+            # 如果模板加载失败，回退到原有硬编码提示词
+            logger.warning(f"Prompt template loading failed: {e}, falling back to built-in prompts")
+            system_prompt = self._build_system_prompt(available_tools, intent_context)
+            user_prompt = self._build_user_prompt(goal, project_id, env_state, intent_context)
 
         messages = [
             {"role": "system", "content": system_prompt},
@@ -109,8 +130,37 @@ class TaskPlanner:
         }
 
     # ------------------------------------------------------------------
-    # Prompt builders
+    # Prompt builders (Phase 4: 新增辅助方法，原有方法保留作为 fallback)
     # ------------------------------------------------------------------
+
+    def _build_tools_description(self, tools: List[Dict]) -> str:
+        """构建工具描述文本（供 Prompt 模板使用）。"""
+        tools_desc = []
+        for t in tools:
+            params = json.dumps(t.get("parameters", {}), ensure_ascii=False, indent=2)
+            tools_desc.append(
+                f"- {t.get('name', 'unknown')}: {t.get('description', '')}\n  参数: {params}"
+            )
+        return "\n".join(tools_desc) if tools_desc else "（当前无可用工具）"
+
+    def _build_intent_text(self, intent_context: Dict[str, Any]) -> str:
+        """构建意图解析文本（供 Prompt 模板使用）。"""
+        if not intent_context:
+            return ""
+        detected_actions = intent_context.get('detected_actions', [])
+        return f"""
+## 意图解析结果（已自动识别）
+- 意图类型：{intent_context.get('intent_type', 'unknown')}
+- 检测到的实体：{json.dumps(intent_context.get('entities', []), ensure_ascii=False, indent=2)}
+- 检测到的动作：{', '.join(detected_actions)}
+- 建议工具：{', '.join(intent_context.get('suggested_tools', []))}
+- 检测到的条件：{json.dumps(intent_context.get('conditions', []), ensure_ascii=False, indent=2)}
+- 缺少的信息：{', '.join(intent_context.get('entities_needed', []))}
+- 依赖的上下文：{', '.join(intent_context.get('dependencies', []))}
+
+## 意图解析器建议
+如果"检测到的动作"中包含明确的分析工具（如 analyze_failures、analyze_admet_sar），请直接调用该工具，不要先获取状态再建议。
+"""
 
     def _build_system_prompt(self, tools: List[Dict], intent_context: Dict[str, Any] = None) -> str:
         """Build the system prompt that instructs the LLM to output JSON plans."""

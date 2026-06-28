@@ -1,20 +1,25 @@
 """
-llm_client.py - Unified LLM Client for DrugDesign Copilot Agent
+llm_client.py - LangChain-Compatible LLM Client for DrugDesign Copilot Agent
 
-Provides a single, reusable LLM client with:
-- Unified API configuration (URL, key, model)
-- Rate limiting (1s between calls)
-- Exponential backoff retry (429/503 auto-retry, 400 no retry)
-- Response caching (same prompt/model => 60s TTL)
-- Metrics tracking (call count, token usage, latency)
-- Stream output support (reserved for Phase 3)
+Phase 1: LLM 调用层标准化
+
+核心设计：
+- 保留原有接口（call/retry_call/cached_call/stream_call），前端无感知
+- 底层替换为 LangChain ChatOpenAI（兼容 Moonshot/Kimi API）
+- 获得 LangChain 能力：流式输出、Token 统计、标准消息格式
+- 保留缓存层、指标监控、指数退避重试（我们的业务逻辑更精细）
+- 预留 LangSmith 追踪接口（Phase 5）
 
 Usage:
     client = LLMClient(api_key=..., model=...)
     response = client.call(messages, temperature=0.3)
     
-    # With retry and cache
-    response = client.retry_call(messages, max_retries=3, cache_ttl=60)
+    # 流式输出（新增能力）
+    for chunk in client.stream_call(messages):
+        yield chunk
+    
+    # 获取指标（增强）
+    metrics = client.get_metrics()
 """
 
 import json
@@ -22,22 +27,29 @@ import os
 import time
 import hashlib
 import logging
-from typing import Dict, Any, List, Optional, Callable
+from typing import Dict, Any, List, Optional, Iterator
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
-import requests
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
+# ── LangChain 核心 ──
+from langchain_openai import ChatOpenAI
+from langchain_core.messages import HumanMessage, SystemMessage, AIMessage, BaseMessage
+from langchain_core.callbacks import CallbackManager
 
 logger = logging.getLogger(__name__)
 
+
+# ============================================================================
+# 数据模型
+# ============================================================================
 
 @dataclass
 class LLMMetrics:
     """LLM 调用统计"""
     total_calls: int = 0
     total_tokens: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
     total_errors: int = 0
     total_cache_hits: int = 0
     total_latency_ms: float = 0.0
@@ -60,16 +72,15 @@ class CacheEntry:
         return datetime.now() - self.timestamp > timedelta(seconds=self.ttl_seconds)
 
 
+# ============================================================================
+# LLM Client（LangChain 兼容版）
+# ============================================================================
+
 class LLMClient:
     """
-    统一 LLM 客户端。
+    LangChain 兼容的统一 LLM 客户端。
     
-    支持：
-    - 统一调用（call）
-    - 带重试调用（retry_call）
-    - 带缓存调用（cached_call）
-    - 流式输出（stream_call，预留）
-    - 指标监控（metrics）
+    底层使用 LangChain ChatOpenAI（兼容 Moonshot API），保留原有接口不变。
     """
     
     # 可重试的 HTTP 状态码
@@ -77,13 +88,7 @@ class LLMClient:
     
     # 可重试的错误关键词（SSL、连接、超时等网络错误）
     RETRYABLE_ERROR_KEYWORDS = [
-        "timeout",
-        "connection",
-        "ssl",
-        "eof",
-        "reset",
-        "refused",
-        "unreachable",
+        "timeout", "connection", "ssl", "eof", "reset", "refused", "unreachable",
     ]
     
     def __init__(
@@ -93,37 +98,58 @@ class LLMClient:
         api_url: Optional[str] = None,
         timeout: int = 60,
         rate_limit_interval: float = 1.0,
+        max_retries: int = 3,
     ):
         from .config import agent_config
+        
         self.api_key = api_key or agent_config.KIMI_API_KEY
         self.model = model or agent_config.DEFAULT_MODEL
         self.api_url = api_url or agent_config.KIMI_API_URL
         self.timeout = timeout or agent_config.LLM_TIMEOUT
         self.rate_limit_interval = rate_limit_interval or agent_config.LLM_RATE_LIMIT_INTERVAL
+        self.max_retries = max_retries
         
         # 状态
         self._last_call_time: float = 0.0
         self._cache: Dict[str, CacheEntry] = {}
         self.metrics = LLMMetrics()
         
-        # 使用 Session 连接池，提高稳定性
-        self._session = requests.Session()
-        # 配置适配器：连接池 10，最大连接数 10，允许连接复用
-        adapter = HTTPAdapter(
-            pool_connections=10,
-            pool_maxsize=10,
-            max_retries=0,  # 我们自己处理重试，这里关闭 urllib3 的自动重试
+        # ── LangChain ChatOpenAI 实例（兼容 Moonshot）──
+        # Moonshot API 是 OpenAI 兼容格式，使用 openai 包 + base_url
+        self._chat_model = ChatOpenAI(
+            model_name=self.model,
+            openai_api_key=self.api_key,
+            openai_api_base=self.api_url.replace("/chat/completions", ""),  # 去掉路径后缀
+            request_timeout=self.timeout,
+            temperature=0.7,
+            max_retries=0,  # 我们自己处理重试，更精细
+            # 可选：启用流式输出
+            streaming=False,
         )
-        self._session.mount("https://", adapter)
-        self._session.mount("http://", adapter)
-    
-    def __del__(self):
-        """析构时关闭 session。"""
-        if hasattr(self, "_session") and self._session:
-            self._session.close()
+        
+        logger.info(f"LLMClient initialized (LangChain): model={self.model}, base={self.api_url}")
     
     # ------------------------------------------------------------------
-    # Public API
+    # 消息转换：OpenAI 风格 → LangChain 消息
+    # ------------------------------------------------------------------
+    
+    @staticmethod
+    def _convert_messages(messages: List[Dict[str, str]]) -> List[BaseMessage]:
+        """将 OpenAI 风格的消息列表转换为 LangChain 消息对象。"""
+        lc_messages = []
+        for msg in messages:
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+            if role == "system":
+                lc_messages.append(SystemMessage(content=content))
+            elif role == "assistant":
+                lc_messages.append(AIMessage(content=content))
+            else:
+                lc_messages.append(HumanMessage(content=content))
+        return lc_messages
+    
+    # ------------------------------------------------------------------
+    # Public API（保留原有接口）
     # ------------------------------------------------------------------
     
     def call(
@@ -133,7 +159,7 @@ class LLMClient:
         **kwargs: Any,
     ) -> str:
         """
-        基础调用。不缓存、不重试，只负责统一配置和速率限制。
+        基础调用。LangChain 驱动，保留原有接口和指标统计。
         
         Args:
             messages: OpenAI-style message list
@@ -149,70 +175,34 @@ class LLMClient:
         # 速率限制
         self._rate_limit_wait()
         
-        # 构建请求
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
-        payload = {
-            "model": self.model,
-            "messages": messages,
-            "temperature": temperature,
-            **kwargs,
-        }
-        
         # 记录开始时间
         start_time = time.time()
         
         try:
-            resp = self._session.post(
-                self.api_url,
-                headers=headers,
-                json=payload,
-                timeout=self.timeout,
+            # 转换为 LangChain 消息
+            lc_messages = self._convert_messages(messages)
+            
+            # 调用 LangChain Chat Model
+            response = self._chat_model.invoke(
+                lc_messages,
+                temperature=temperature,
+                **kwargs,
             )
-            resp.raise_for_status()
-            data = resp.json()
             
             # 提取内容
-            content = (
-                data.get("choices", [{}])[0]
-                .get("message", {})
-                .get("content", "")
-                .strip()
-            )
+            content = response.content.strip() if response.content else ""
             
-            # 更新指标
+            # ── 更新指标（LangChain 自动提供 Token 统计）──
             latency_ms = (time.time() - start_time) * 1000
-            self._update_metrics(latency_ms=latency_ms, data=data)
+            usage = response.response_metadata.get("token_usage", {}) if hasattr(response, "response_metadata") else {}
+            self._update_metrics(
+                latency_ms=latency_ms,
+                prompt_tokens=usage.get("prompt_tokens", 0),
+                completion_tokens=usage.get("completion_tokens", 0),
+            )
             
             return content
             
-        except requests.exceptions.HTTPError as e:
-            status_code = e.response.status_code if e.response else 0
-            latency_ms = (time.time() - start_time) * 1000
-            self._update_metrics(latency_ms=latency_ms, error=True)
-            error_msg = f"LLM 调用失败 (HTTP {status_code}): {e}"
-            logger.error(error_msg)
-            return error_msg
-        except requests.exceptions.SSLError as e:
-            latency_ms = (time.time() - start_time) * 1000
-            self._update_metrics(latency_ms=latency_ms, error=True)
-            error_msg = f"LLM 调用失败 (SSL 错误): {e}"
-            logger.error(error_msg)
-            return error_msg
-        except requests.exceptions.ConnectionError as e:
-            latency_ms = (time.time() - start_time) * 1000
-            self._update_metrics(latency_ms=latency_ms, error=True)
-            error_msg = f"LLM 调用失败 (连接错误): {e}"
-            logger.error(error_msg)
-            return error_msg
-        except requests.exceptions.Timeout as e:
-            latency_ms = (time.time() - start_time) * 1000
-            self._update_metrics(latency_ms=latency_ms, error=True)
-            error_msg = f"LLM 调用失败 (超时): {e}"
-            logger.error(error_msg)
-            return error_msg
         except Exception as e:
             latency_ms = (time.time() - start_time) * 1000
             self._update_metrics(latency_ms=latency_ms, error=True)
@@ -229,19 +219,12 @@ class LLMClient:
         **kwargs: Any,
     ) -> str:
         """
-        带指数退避重试的调用。
+        带指数退避重试的调用。保留原有业务逻辑。
         
         - 429/500/502/503: 自动重试（指数退避）
         - 400/401/403: 不重试（参数错误或权限问题）
         - SSL/连接/超时错误: 自动重试（网络波动）
         - 其他异常: 重试一次
-        
-        Args:
-            max_retries: 最大重试次数（不含第一次）
-            base_delay: 初始退避延迟（秒）
-        
-        Returns:
-            Raw text content from LLM, or error message string.
         """
         last_error = ""
         
@@ -257,10 +240,10 @@ class LLMClient:
             if not is_retryable or attempt >= max_retries:
                 return result
             
-            # 指数退避等待（SSL 错误额外等待更久，让网络恢复）
+            # 指数退避等待
             delay = base_delay * (2 ** attempt)
             if "SSL" in result or "连接" in result:
-                delay += 1.0  # 网络错误额外等待 1 秒
+                delay += 1.0
             logger.warning(f"LLM 调用失败，第 {attempt + 1} 次重试，等待 {delay:.1f}s...")
             time.sleep(delay)
             last_error = result
@@ -276,12 +259,6 @@ class LLMClient:
     ) -> str:
         """
         带缓存的调用。相同 (messages + model + temperature) 在 TTL 内复用响应。
-        
-        Args:
-            cache_ttl: 缓存有效期（秒），默认 60s
-        
-        Returns:
-            Raw text content from LLM or cache.
         """
         cache_key = self._make_cache_key(messages, temperature, **kwargs)
         
@@ -309,17 +286,62 @@ class LLMClient:
         messages: List[Dict[str, str]],
         temperature: float = 0.7,
         **kwargs: Any,
-    ):
+    ) -> Iterator[str]:
         """
-        流式输出调用（预留接口，Phase 3 实现）。
+        流式输出调用（LangChain 原生支持，Phase 1 启用）。
         
         Returns:
             Generator yielding partial text chunks.
         """
-        # Phase 3: 实现流式输出
-        # 目前 fallback 到普通调用，返回完整文本
-        full_text = self.retry_call(messages, temperature, **kwargs)
-        yield full_text
+        if not self.api_key:
+            yield "API Key 未配置，无法调用 LLM 服务。"
+            return
+        
+        # 速率限制
+        self._rate_limit_wait()
+        
+        start_time = time.time()
+        
+        try:
+            # 转换为 LangChain 消息
+            lc_messages = self._convert_messages(messages)
+            
+            # 使用流式模式
+            stream_model = self._chat_model.bind(streaming=True)
+            
+            for chunk in stream_model.stream(lc_messages, temperature=temperature, **kwargs):
+                content = chunk.content if hasattr(chunk, "content") else str(chunk)
+                if content:
+                    yield content
+            
+            # 更新指标
+            latency_ms = (time.time() - start_time) * 1000
+            self._update_metrics(latency_ms=latency_ms)
+            
+        except Exception as e:
+            latency_ms = (time.time() - start_time) * 1000
+            self._update_metrics(latency_ms=latency_ms, error=True)
+            error_msg = f"LLM 流式调用失败: {e}"
+            logger.error(error_msg)
+            yield error_msg
+    
+    # ------------------------------------------------------------------
+    # 高级接口：LangChain 原生消息
+    # ------------------------------------------------------------------
+    
+    def invoke_lc(
+        self,
+        messages: List[BaseMessage],
+        temperature: float = 0.7,
+        **kwargs: Any,
+    ) -> Any:
+        """
+        直接接受 LangChain 消息对象的调用接口。
+        
+        用于与 LangChain 其他组件（如 Chain、Agent）集成。
+        """
+        self._rate_limit_wait()
+        return self._chat_model.invoke(messages, temperature=temperature, **kwargs)
     
     # ------------------------------------------------------------------
     # Metrics & Cache Management
@@ -330,6 +352,8 @@ class LLMClient:
         return {
             "total_calls": self.metrics.total_calls,
             "total_tokens": self.metrics.total_tokens,
+            "prompt_tokens": self.metrics.prompt_tokens,
+            "completion_tokens": self.metrics.completion_tokens,
             "total_errors": self.metrics.total_errors,
             "total_cache_hits": self.metrics.total_cache_hits,
             "avg_latency_ms": round(self.metrics.avg_latency_ms, 2),
@@ -360,11 +384,9 @@ class LLMClient:
     
     def _is_retryable_error(self, error_msg: str) -> bool:
         """判断错误是否可重试。"""
-        # HTTP 可重试状态码
         for code in self.RETRYABLE_STATUS_CODES:
             if f"HTTP {code}" in error_msg:
                 return True
-        # 网络错误关键词（SSL、连接、超时等）
         error_lower = error_msg.lower()
         for keyword in self.RETRYABLE_ERROR_KEYWORDS:
             if keyword in error_lower:
@@ -374,19 +396,19 @@ class LLMClient:
     def _update_metrics(
         self,
         latency_ms: float,
-        data: Optional[Dict] = None,
+        prompt_tokens: int = 0,
+        completion_tokens: int = 0,
         error: bool = False,
     ) -> None:
         """更新指标。"""
         self.metrics.total_calls += 1
         self.metrics.total_latency_ms += latency_ms
+        self.metrics.prompt_tokens += prompt_tokens
+        self.metrics.completion_tokens += completion_tokens
+        self.metrics.total_tokens += prompt_tokens + completion_tokens
         
         if error:
             self.metrics.total_errors += 1
-        
-        if data and "usage" in data:
-            usage = data["usage"]
-            self.metrics.total_tokens += usage.get("total_tokens", 0)
     
     def _make_cache_key(
         self,

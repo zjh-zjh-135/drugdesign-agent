@@ -246,3 +246,188 @@ def search_long_term_memory(db, query: str, category: str = None, limit: int = 1
         }
         for r in results
     ]
+
+
+# ============================================================================
+# Phase 3: LangChain 记忆兼容层（新增，不影响原有代码）
+# ============================================================================
+
+"""
+LangChain 记忆标准化接口
+
+在原有数据库记忆基础上，提供 LangChain 兼容的 Memory 对象，
+可接入 LangChain Chain、Agent 等生态组件。
+
+原有接口（save_message / get_conversation_history）完全保留。
+
+注意：LangChain 1.x 已重构 Memory 体系，这里不继承 BaseMemory，
+      而是提供与 LangChain 0.x 兼容的接口（load_memory_variables / save_context / clear）。
+"""
+
+from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
+
+
+class AgentConversationMemory:
+    """
+    LangChain 兼容的对话记忆管理器。
+    
+    底层使用数据库持久化，上层提供与 LangChain 兼容的接口。
+    """
+    
+    def __init__(self, session_id: str, db=None, max_token_limit: int = 4000):
+        self.memory_key = "chat_history"
+        self.session_id = session_id
+        self.db = db
+        self._max_token_limit = max_token_limit
+    
+    @property
+    def memory_variables(self) -> List[str]:
+        """返回记忆变量名列表。"""
+        return [self.memory_key]
+    
+    def load_memory_variables(self, inputs: Dict[str, Any] = None) -> Dict[str, Any]:
+        """
+        加载记忆变量。
+        
+        Returns:
+            {memory_key: [HumanMessage, AIMessage, ...]}
+        """
+        if not self.db or not self.session_id:
+            return {self.memory_key: []}
+        
+        # 使用原有函数获取历史
+        history = get_conversation_history(
+            self.db, self.session_id, limit=20, max_tokens=self._max_token_limit
+        )
+        
+        # 转换为 LangChain 消息对象
+        lc_messages = []
+        for msg in history:
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+            if role == "system":
+                lc_messages.append(SystemMessage(content=content))
+            elif role == "assistant":
+                lc_messages.append(AIMessage(content=content))
+            else:
+                lc_messages.append(HumanMessage(content=content))
+        
+        return {self.memory_key: lc_messages}
+    
+    def save_context(self, inputs: Dict[str, Any], outputs: Dict[str, str]) -> None:
+        """
+        保存对话上下文。
+        
+        Args:
+            inputs: 通常包含 {"input": "用户输入"}
+            outputs: 通常包含 {"output": "助手回复"}
+        """
+        if not self.db or not self.session_id:
+            return
+        
+        # 保存用户输入
+        user_input = inputs.get("input", "")
+        if user_input:
+            save_message(self.db, self.session_id, "user", user_input)
+        
+        # 保存助手输出
+        assistant_output = outputs.get("output", "")
+        if assistant_output:
+            save_message(self.db, self.session_id, "assistant", assistant_output)
+    
+    def clear(self) -> None:
+        """清空记忆。"""
+        # 数据库层面不删除，仅标记
+        if self.db and self.session_id:
+            save_message(self.db, self.session_id, "system", "[Memory cleared]")
+
+
+class AgentSummaryMemory:
+    """
+    LangChain 兼容的摘要记忆管理器。
+    
+    当对话历史超过 token 限制时，自动对早期消息生成摘要。
+    """
+    
+    def __init__(self, session_id: str, db=None, llm_client=None):
+        self.memory_key = "summary"
+        self.session_id = session_id
+        self.db = db
+        self.llm_client = llm_client  # LLMClient 实例，用于生成摘要
+    
+    @property
+    def memory_variables(self) -> List[str]:
+        return [self.memory_key]
+    
+    def load_memory_variables(self, inputs: Dict[str, Any] = None) -> Dict[str, Any]:
+        """加载摘要记忆。"""
+        if not self.db or not self.session_id:
+            return {self.memory_key: ""}
+        
+        # 获取历史并检查是否需要摘要
+        history = get_conversation_history(self.db, self.session_id, limit=50)
+        
+        # 简单估算 token
+        total_chars = sum(len(m.get("content", "")) for m in history)
+        estimated_tokens = total_chars * 0.5
+        
+        # 如果超过预算，生成摘要
+        if estimated_tokens > 4000 and len(history) > 5 and self.llm_client:
+            early_messages = history[:-5]  # 早期消息
+            summary = self._generate_summary(early_messages)
+            return {self.memory_key: summary}
+        
+        return {self.memory_key: ""}
+    
+    def _generate_summary(self, messages: List[Dict]) -> str:
+        """使用 LLM 生成摘要。"""
+        content = "\n".join([f"{m['role']}: {m['content'][:100]}" for m in messages])
+        prompt = f"请对以下对话历史进行简要摘要（100字以内）：\n\n{content}"
+        try:
+            return self.llm_client.call([{"role": "user", "content": prompt}], temperature=0.3)
+        except Exception:
+            return "[对话历史摘要]"
+    
+    def save_context(self, inputs: Dict[str, Any], outputs: Dict[str, str]) -> None:
+        """摘要记忆不需要每次保存，由数据库层处理。"""
+        pass
+    
+    def clear(self) -> None:
+        """清空摘要。"""
+        pass
+
+
+# ── 便捷工厂函数 ──
+
+def create_langchain_memory(session_id: str, db=None, llm_client=None) -> Dict[str, Any]:
+    """
+    创建一套 LangChain 兼容的记忆对象。
+    
+    Returns:
+        {
+            "conversation": AgentConversationMemory,  # 短期对话记忆
+            "summary": AgentSummaryMemory,             # 长期摘要记忆
+        }
+    """
+    return {
+        "conversation": AgentConversationMemory(session_id=session_id, db=db),
+        "summary": AgentSummaryMemory(session_id=session_id, db=db, llm_client=llm_client),
+    }
+
+
+# 原有导出 + Phase 3 新增
+__all__ = [
+    # 原有接口
+    "get_or_create_session",
+    "save_message",
+    "get_conversation_history",
+    "save_project_memory",
+    "get_project_memory",
+    "get_project_summary",
+    "save_long_term_memory",
+    "search_long_term_memory",
+    # Phase 3 新增
+    "AgentConversationMemory",
+    "AgentSummaryMemory",
+    "create_langchain_memory",
+]
