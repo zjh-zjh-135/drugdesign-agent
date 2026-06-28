@@ -147,4 +147,9 @@ export const api = {
   getProjectSummary: (projectId) => client.get(`/agent/projects/${projectId}/summary`),
   listAgentTools: () => client.get('/agent/tools'),
   getTopMolecules: (projectId, limit = 10) => client.get(`/projects/${projectId}/top-molecules`, { params: { limit } }),
+  
+  // Phase 5: Agent 追踪
+  getAgentTraces: (params) => client.get('/agent/traces', { params }),
+  getAgentTraceDetail: (traceId) => client.get(`/agent/traces/${traceId}`),
+  clearAgentTraces: () => client.delete('/agent/traces'),
 }

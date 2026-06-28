@@ -91,7 +91,9 @@ class AgentTrace:
         self.steps.append(step)
     
     def finish(self, success: bool = True, final_result: Dict = None):
-        """标记追踪完成"""
+        """标记追踪完成。幂等操作：已经完成后不再修改。"""
+        if self.end_time is not None:
+            return  # 已经 finish 过，不再重复
         self.end_time = datetime.now()
         self.total_latency_ms = (self.end_time - self.start_time).total_seconds() * 1000
         self.success = success
@@ -281,10 +283,10 @@ class AgentTracer:
         return self
     
     def __exit__(self, exc_type, exc_val, exc_tb):
-        """退出上下文，完成追踪"""
+        """退出上下文，完成追踪。如果已经手动 finish 过，则不再覆盖。"""
         if exc_type:
             self.trace.finish(success=False, final_result={"error": str(exc_val)})
-        else:
+        elif self.trace.end_time is None:
             self.trace.finish(success=True)
         
         TraceStore.save(self.trace)
@@ -312,6 +314,15 @@ class AgentTracer:
     def set_intent(self, intent_type: str):
         """设置意图类型"""
         self.trace.intent_type = intent_type
+    
+    def finish(self, success: bool = True, final_result: Dict = None):
+        """
+        提前完成追踪（用于在上下文退出前手动标记完成）。
+        
+        当需要在 __exit__ 之前提前结束追踪时使用（例如中途返回结果）。
+        __exit__ 会自动处理未完成的追踪。
+        """
+        self.trace.finish(success=success, final_result=final_result or {})
     
     def get_trace(self) -> AgentTrace:
         """获取当前追踪记录"""
