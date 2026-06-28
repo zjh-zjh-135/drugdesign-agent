@@ -14,6 +14,7 @@ import ActivityPage from './pages/ActivityPage'
 import ResultsPage from './pages/ResultsPage'
 import FailedMolecules from './pages/FailedMolecules'
 import AboutPage from './pages/AboutPage'
+import AgentTracePage from './pages/AgentTracePage'
 
 // 动态导入大体积页面（代码分割）
 const MoleculeBuilderPage = lazy(() => import('./pages/MoleculeBuilderPage'))
@@ -38,6 +39,7 @@ function App() {
             <Route path="/docking" element={<DockingPage />} />
             <Route path="/activity" element={<ActivityPage />} />
             <Route path="/failed-molecules" element={<FailedMolecules />} />
+            <Route path="/agent-traces" element={<AgentTracePage />} />
             <Route path="/results" element={<ResultsPage />} />
             <Route path="/about" element={<AboutPage />} />
           </Routes>

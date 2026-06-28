@@ -668,6 +668,109 @@ def get_top_molecules(project_id: int, limit: int = 10) -> Dict:
 
 
 @register_tool(
+    "format_top_molecules",
+    "获取项目中 Top 候选分子的格式化报告（包含完整分子数据、性质分析和下一步建议）",
+    {
+        "project_id": {"type": "integer", "description": "项目ID", "required": True},
+        "limit": {"type": "integer", "description": "返回数量限制", "required": False, "default": 3}
+    }
+)
+def format_top_molecules(project_id: int, limit: int = 3) -> Dict:
+    """获取 Top 候选分子的格式化报告"""
+    result = get_top_molecules(project_id, limit=limit)
+    
+    if not result.get("success"):
+        return result
+    
+    top_molecules = result.get("molecules", [])
+    count = result.get("count", 0)
+    
+    if not top_molecules:
+        return {
+            "success": True,
+            "count": 0,
+            "molecules": [],
+            "final_report": "暂无通过合成筛选的候选分子。Pipeline 可能还在运行中，或没有分子通过所有筛选阶段。",
+        }
+    
+    # 生成 Markdown 报告
+    lines = [
+        "",
+        f"## Top {count} 候选分子详细报告",
+        "",
+    ]
+    
+    for i, mol in enumerate(top_molecules, 1):
+        score = mol.get("score") if mol.get("score") is not None else "N/A"
+        docking = mol.get("docking_score") if mol.get("docking_score") is not None else "待计算"
+        admet = mol.get("admet_score") if mol.get("admet_score") is not None else "N/A"
+        qed = mol.get("qed") if mol.get("qed") is not None else "N/A"
+        mw = mol.get("mw") if mol.get("mw") is not None else "N/A"
+        logp = mol.get("logp") if mol.get("logp") is not None else "N/A"
+        tpsa = mol.get("tpsa") if mol.get("tpsa") is not None else "N/A"
+        hbd = mol.get("hbd") if mol.get("hbd") is not None else "N/A"
+        hba = mol.get("hba") if mol.get("hba") is not None else "N/A"
+        sa = mol.get("sa_score") if mol.get("sa_score") is not None else "N/A"
+        smiles = mol.get("smiles") if mol.get("smiles") is not None else "N/A"
+        
+        rank_emoji = {1: "1st", 2: "2nd", 3: "3rd"}.get(i, f"#{i}")
+        
+        lines.append(f"### {rank_emoji} 候选分子 #{i}（综合得分：{score}）")
+        lines.append("")
+        lines.append(f"- **SMILES**：`{smiles}`")
+        lines.append(f"- **分子量 (MW)**：{mw} | **LogP**：{logp} | **QED**：{qed}")
+        lines.append(f"- **对接分数**：{docking} | **ADMET 得分**：{admet} | **SA Score**：{sa}")
+        lines.append(f"- **TPSA**：{tpsa} | **HBD**：{hbd} | **HBA**：{hba}")
+        
+        evaluations = []
+        if qed is not None and qed != "N/A" and qed > 0.7:
+            evaluations.append("QED 优秀")
+        if admet is not None and admet != "N/A" and admet > 70:
+            evaluations.append("ADMET 良好")
+        if docking is not None and docking != "N/A" and docking < -7:
+            evaluations.append("对接强")
+        if sa is not None and sa != "N/A" and sa < 3.5:
+            evaluations.append("合成可及")
+        
+        if evaluations:
+            lines.append(f"- **亮点**：{'、'.join(evaluations)}")
+        
+        lines.append("")
+    
+    # 下一步建议
+    lines.append("**下一步建议**")
+    lines.append("")
+    
+    if top_molecules:
+        top1 = top_molecules[0]
+        top1_qed = top1.get("qed")
+        top1_admet = top1.get("admet_score")
+        top1_sa = top1.get("sa_score")
+        
+        suggestions = []
+        if top1_qed is not None and top1_qed > 0.7:
+            suggestions.append(f"候选分子 #1 的 QED（{top1_qed}）表现优秀，药物相似性高，建议优先合成验证")
+        if top1_admet is not None and top1_admet > 70:
+            suggestions.append(f"ADMET 得分（{top1_admet}）良好，药代动力学风险可控")
+        if top1_sa is not None and top1_sa > 4:
+            suggestions.append(f"注意：SA Score（{top1_sa}）偏高，合成难度可能较大，建议评估合成路线")
+        
+        if not suggestions:
+            suggestions.append("建议对 Top 候选分子进行 FEP 精修和合成路线评估")
+        
+        for i, sug in enumerate(suggestions, 1):
+            lines.append(f"{i}. {sug}")
+        lines.append("")
+    
+    return {
+        "success": True,
+        "count": count,
+        "molecules": top_molecules,
+        "final_report": "\n".join(lines),
+    }
+
+
+@register_tool(
     "get_pipeline_progress",
     "查询指定项目的最新 Pipeline 运行进度",
     {
@@ -755,10 +858,10 @@ def wait_for_pipeline(project_id: int, max_wait_seconds: int = 300, poll_interva
         if latest_run.status in ("completed", "failed"):
             return _build_wait_result(db, latest_run, project_id, elapsed=0, completed=True)
         
-        # 轮询等待
+        # 轮询等待（包括 pending 状态，因为 Pipeline 启动后可能尚未更新为 running）
         elapsed = 0
         check_interval = min(poll_interval, 3)
-        while latest_run.status == "running" and elapsed < max_wait_seconds:
+        while latest_run.status in ("pending", "running") and elapsed < max_wait_seconds:
             time.sleep(check_interval)
             elapsed += check_interval
             db.refresh(latest_run)
@@ -813,6 +916,247 @@ def _build_wait_result(db, pipeline_run, project_id, elapsed, completed):
         result["summary"] = f"Pipeline 运行失败。已生成 {pipeline_run.num_generated} 个分子。"
     
     return result
+
+
+# ========== 端到端全流程工具 ==========
+
+@register_tool(
+    "run_full_pipeline",
+    "端到端运行药物发现全流程：从靶点名称到候选分子。自动获取PDB ID、创建项目、添加已知活性分子、运行Pipeline、等待完成并返回Top候选分子。适合一键式完成从靶点到候选分子的完整流程。",
+    {
+        "target_name": {"type": "string", "description": "靶点名称（如HER2、EGFR、VEGFR2、AKT1、BRAF等）", "required": True},
+        "num_molecules": {"type": "integer", "description": "生成分子数量，默认50", "required": False, "default": 50},
+        "similarity_threshold": {"type": "number", "description": "相似度阈值（0.0-1.0），默认0.3", "required": False, "default": 0.3},
+        "admet_threshold": {"type": "number", "description": "ADMET综合阈值（0-100），默认60", "required": False, "default": 60},
+        "limit": {"type": "integer", "description": "返回Top候选分子数量，默认3", "required": False, "default": 3}
+    }
+)
+def run_full_pipeline(target_name: str, num_molecules: int = 50, 
+                       similarity_threshold: float = 0.3, admet_threshold: float = 60,
+                       limit: int = 3) -> Dict:
+    """
+    端到端全流程：靶点名称 -> 获取PDB ID -> 创建项目（自动添加活性分子） -> 运行Pipeline -> 等待完成 -> 获取Top分子
+    """
+    from ...services.target_database import get_pdb_id_for_target, get_active_molecules_for_target
+    
+    print(f"[run_full_pipeline] 开始全流程：target={target_name}, num={num_molecules}, limit={limit}")
+    
+    # 1. 获取 PDB ID
+    pdb_id = get_pdb_id_for_target(target_name)
+    if not pdb_id:
+        pdb_id = target_name
+        print(f"[run_full_pipeline] 未在数据库中找到 {target_name} 的 PDB ID，使用名称本身")
+    else:
+        print(f"[run_full_pipeline] 靶点 {target_name} 对应 PDB ID: {pdb_id}")
+    
+    # 2. 创建项目（自动添加已知活性分子）
+    project_result = create_project(
+        name=f"{target_name}_auto_{datetime.now().strftime('%m%d%H%M')}",
+        target_name=target_name,
+        target_pdb=pdb_id,
+        description=f"自动全流程项目 - 靶点: {target_name}",
+        design_goal="hit_finding"
+    )
+    
+    if not project_result.get("success"):
+        return {
+            "success": False,
+            "stage": "project_creation",
+            "error": project_result.get("error", "项目创建失败")
+        }
+    
+    project_id = project_result["project_id"]
+    active_count = project_result.get("active_molecules_added", 0)
+    print(f"[run_full_pipeline] 项目创建成功: ID={project_id}, 活性分子={active_count}个")
+    
+    # 3. 运行 Pipeline（后台线程运行，非阻塞）
+    pipeline_result = run_pipeline(
+        project_id=project_id,
+        num_molecules=num_molecules,
+        generation_strategy="crem",
+        similarity_threshold=similarity_threshold,
+        admet_threshold=admet_threshold
+    )
+    
+    if not pipeline_result.get("success"):
+        return {
+            "success": False,
+            "stage": "pipeline_run",
+            "project_id": project_id,
+            "error": pipeline_result.get("error", "Pipeline启动失败")
+        }
+    
+    pipeline_run_id = pipeline_result.get("pipeline_run_id")
+    print(f"[run_full_pipeline] Pipeline已启动: run_id={pipeline_run_id}")
+    
+    # 4. 等待 Pipeline 完成（阻塞轮询，最多300秒）
+    wait_result = wait_for_pipeline(
+        project_id=project_id,
+        max_wait_seconds=300,
+        poll_interval=3
+    )
+    
+    if not wait_result.get("success"):
+        return {
+            "success": False,
+            "stage": "pipeline_wait",
+            "project_id": project_id,
+            "error": wait_result.get("error", "等待Pipeline失败")
+        }
+    
+    # 5. 获取 Top 候选分子
+    top_result = get_top_molecules(project_id, limit=limit)
+    
+    top_molecules = top_result.get("molecules", []) if top_result.get("success") else []
+    
+    # 6. 整合返回完整结果
+    final_result = {
+        "success": True,
+        "project_id": project_id,
+        "project_name": project_result.get("name", ""),
+        "target_name": target_name,
+        "target_pdb": pdb_id,
+        "active_molecules_added": active_count,
+        "pipeline_run_id": pipeline_run_id,
+        "pipeline_status": wait_result.get("status", "unknown"),
+        "elapsed_seconds": wait_result.get("elapsed_seconds", 0),
+        "num_generated": wait_result.get("num_generated", 0),
+        "num_passed": wait_result.get("num_passed", 0),
+        "num_failed": wait_result.get("num_failed", 0),
+        "stage_counts": wait_result.get("stage_counts", {}),
+        "top_molecules": top_molecules,
+        "message": (
+            f"全流程完成。项目ID={project_id}，生成{wait_result.get('num_generated', 0)}个分子，"
+            f"通过{wait_result.get('num_passed', 0)}个，获得Top {len(top_molecules)}候选分子。"
+        )
+    }
+    
+    # 如果 pipeline 失败，标记成功但给出警告
+    if wait_result.get("status") == "failed":
+        final_result["success"] = False
+        final_result["stage"] = "pipeline_failed"
+        final_result["message"] = f"Pipeline运行失败。已生成{wait_result.get('num_generated', 0)}个分子，但筛选未通过。"
+    
+    # 生成 Markdown 格式化报告
+    final_result["final_report"] = _build_full_pipeline_report(final_result)
+
+    return final_result
+
+
+def _build_full_pipeline_report(obs):
+    """生成 run_full_pipeline 的 Markdown 报告"""
+    if not obs.get("success"):
+        return f"**全流程执行失败**：{obs.get('error', '未知错误')}"
+    
+    target_name = obs.get("target_name", "N/A")
+    target_pdb = obs.get("target_pdb", "N/A")
+    project_name = obs.get("project_name", "N/A")
+    project_id = obs.get("project_id", "N/A")
+    active_count = obs.get("active_molecules_added", 0)
+    
+    num_generated = obs.get("num_generated", 0)
+    num_passed = obs.get("num_passed", 0)
+    num_failed = obs.get("num_failed", 0)
+    elapsed = obs.get("elapsed_seconds", 0)
+    status = obs.get("pipeline_status", "unknown")
+    
+    top_molecules = obs.get("top_molecules", [])
+    
+    lines = [
+        "",
+        f"## {target_name} 全流程完成 — 候选分子报告",
+        "",
+        f"**项目信息**：ID={project_id} | 靶点：**{target_name}** | PDB：**{target_pdb}** | 项目名称：{project_name}",
+        "",
+        "**Pipeline 执行结果**",
+        "",
+        f"| 指标 | 数值 |",
+        f"|------|------|",
+        f"| 生成总数 | {num_generated} 个 |",
+        f"| 通过筛选 | {num_passed} 个 |",
+        f"| 失败 | {num_failed} 个 |",
+        f"| 执行耗时 | {elapsed} 秒 |",
+        f"| 状态 | {'完成' if status == 'completed' else status} |",
+        "",
+    ]
+    
+    if active_count > 0:
+        lines.append(f"**已知活性分子**：已自动添加 {active_count} 个作为参考")
+        lines.append("")
+    
+    if top_molecules:
+        lines.append(f"**Top {len(top_molecules)} 候选分子**")
+        lines.append("")
+        
+        for i, mol in enumerate(top_molecules, 1):
+            score = mol.get("score") if mol.get("score") is not None else "N/A"
+            docking = mol.get("docking_score") if mol.get("docking_score") is not None else "待计算"
+            admet = mol.get("admet_score") if mol.get("admet_score") is not None else "N/A"
+            qed = mol.get("qed") if mol.get("qed") is not None else "N/A"
+            mw = mol.get("mw") if mol.get("mw") is not None else "N/A"
+            logp = mol.get("logp") if mol.get("logp") is not None else "N/A"
+            tpsa = mol.get("tpsa") if mol.get("tpsa") is not None else "N/A"
+            hbd = mol.get("hbd") if mol.get("hbd") is not None else "N/A"
+            hba = mol.get("hba") if mol.get("hba") is not None else "N/A"
+            sa = mol.get("sa_score") if mol.get("sa_score") is not None else "N/A"
+            smiles = mol.get("smiles") if mol.get("smiles") is not None else "N/A"
+            
+            rank_emoji = {1: "1st", 2: "2nd", 3: "3rd"}.get(i, f"#{i}")
+            
+            lines.append(f"### {rank_emoji} 候选分子 #{i}（综合得分：{score}）")
+            lines.append("")
+            lines.append(f"- **SMILES**：`{smiles}`")
+            lines.append(f"- **分子量 (MW)**：{mw} | **LogP**：{logp} | **QED**：{qed}")
+            lines.append(f"- **对接分数**：{docking} | **ADMET 得分**：{admet} | **SA Score**：{sa}")
+            lines.append(f"- **TPSA**：{tpsa} | **HBD**：{hbd} | **HBA**：{hba}")
+            
+            evaluations = []
+            if qed is not None and qed != "N/A" and qed > 0.7:
+                evaluations.append("QED 优秀")
+            if admet is not None and admet != "N/A" and admet > 70:
+                evaluations.append("ADMET 良好")
+            if docking is not None and docking != "N/A" and docking < -7:
+                evaluations.append("对接强")
+            if sa is not None and sa != "N/A" and sa < 3.5:
+                evaluations.append("合成可及")
+            
+            if evaluations:
+                lines.append(f'- **亮点**：{", ".join(evaluations)}')
+            
+            lines.append("")
+        
+        lines.append("**下一步建议**")
+        lines.append("")
+        
+        if top_molecules:
+            top1 = top_molecules[0]
+            top1_qed = top1.get("qed")
+            top1_admet = top1.get("admet_score")
+            top1_sa = top1.get("sa_score")
+            
+            suggestions = []
+            if top1_qed is not None and top1_qed > 0.7:
+                suggestions.append(f"候选分子 #1 的 QED（{top1_qed}）表现优秀，建议优先合成验证")
+            if top1_admet is not None and top1_admet > 70:
+                suggestions.append(f"ADMET 得分（{top1_admet}）良好，药代动力学风险可控")
+            if top1_sa is not None and top1_sa > 4:
+                suggestions.append(f"注意：SA Score（{top1_sa}）偏高，合成难度可能较大，建议评估合成路线")
+            
+            if not suggestions:
+                suggestions.append("建议对 Top 候选分子进行 FEP 精修和合成路线评估")
+            
+            for i, sug in enumerate(suggestions, 1):
+                lines.append(f"{i}. {sug}")
+            lines.append("")
+    else:
+        lines.append("**暂无通过合成筛选的候选分子**")
+        lines.append("")
+        if num_failed > 0:
+            lines.append(f"- 所有 {num_failed} 个分子在筛选中失败，建议分析失败原因并调整参数")
+            lines.append("- 可尝试：降低 ADMET 阈值、放宽相似度限制、增加生成分子数量")
+        lines.append("")
+    
+    return "\n".join(lines)
 
 
 # ========== 单分子 ADMET 分析工具（直接分析，不依赖 Pipeline）==========

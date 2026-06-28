@@ -409,27 +409,22 @@ class TaskPlanner:
     ) -> Dict[str, Any]:
         """Return a minimal fallback plan when LLM fails."""
         steps = []
+        # Stage 4: 不再默认调用 get_project_status + suggest_next_step
+        # 改为返回诚实提示，让用户明确需求
         if project_id:
             steps.append({
                 "step_number": 1,
                 "tool": "get_project_status",
                 "params": {"project_id": project_id},
-                "reason": "LLM 规划失败，先获取项目状态",
+                "reason": "获取项目基本信息以便给出针对性回复",
                 "expected_outcome": "了解项目当前进展",
-            })
-            steps.append({
-                "step_number": 2,
-                "tool": "suggest_next_step",
-                "params": {"project_id": project_id},
-                "reason": "基于状态获取建议",
-                "expected_outcome": "得到下一步操作建议",
             })
         else:
             steps.append({
                 "step_number": 1,
                 "tool": "list_projects",
                 "params": {},
-                "reason": "LLM 规划失败，先列出项目",
+                "reason": "列出已有项目供用户选择",
                 "expected_outcome": "获取现有项目列表",
             })
 
@@ -438,6 +433,6 @@ class TaskPlanner:
             "goal": goal,
             "project_id": project_id,
             "steps": steps,
-            "summary": f"LLM 规划失败（{error}），使用默认回退计划",
+            "summary": f"抱歉，我没有完全理解您的需求（{error}）。请告诉我：您想查看分子数据、分析失败原因，还是调整参数重新运行？",
             "raw_response": "",
         }

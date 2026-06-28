@@ -1089,31 +1089,33 @@ export default function HelpChatModal({ onClose, projectId }) {
                         </div>
                       )}
                       
-                      {/* ReAct 步骤展示 */}
+                      {/* ReAct 步骤展示 - 默认折叠，用户可展开查看 */}
                       {msg.steps && msg.steps.length > 0 && (
-                        <div className="mt-3 pt-2 border-t border-slate-200/60">
-                          <div className="flex items-center gap-1 mb-1">
-                            <RotateCcw className="w-3 h-3 text-slate-400" />
-                            <span className="text-[10px] font-medium text-slate-400">执行步骤</span>
+                        <details className="mt-3 pt-2 border-t border-slate-200/60 group">
+                          <summary className="flex items-center gap-1 text-[10px] font-medium text-slate-400 cursor-pointer hover:text-slate-600 select-none list-none">
+                            <ChevronRight className="w-3 h-3 transition-transform group-open:rotate-90" />
+                            <span>执行详情 ({msg.steps.length} 步)</span>
+                          </summary>
+                          <div className="mt-2">
+                            {msg.steps.map((step, si) => (
+                              <div key={si} className="text-[10px] text-slate-500 mb-1">
+                                <span className="font-medium">Step {step.step}:</span> {step.thought}
+                                {step.action && (
+                                  <div className="ml-3 mt-0.5 text-slate-600">
+                                    Action: {step.action.tool}({JSON.stringify(step.action.params)})
+                                  </div>
+                                )}
+                                {step.status && (
+                                  <div className={`ml-3 mt-0.5 ${
+                                    step.status === 'ok' ? 'text-emerald-600' : 'text-red-500'
+                                  }`}>
+                                    Status: {step.status}
+                                  </div>
+                                )}
+                              </div>
+                            ))}
                           </div>
-                          {msg.steps.map((step, si) => (
-                            <div key={si} className="text-[10px] text-slate-500 mb-1">
-                              <span className="font-medium">Step {step.step}:</span> {step.thought}
-                              {step.action && (
-                                <div className="ml-3 mt-0.5 text-slate-600">
-                                  Action: {step.action.tool}({JSON.stringify(step.action.params)})
-                                </div>
-                              )}
-                              {step.status && (
-                                <div className={`ml-3 mt-0.5 ${
-                                  step.status === 'ok' ? 'text-emerald-600' : 'text-red-500'
-                                }`}>
-                                  Status: {step.status}
-                                </div>
-                              )}
-                            </div>
-                          ))}
-                        </div>
+                        </details>
                       )}
 
                       {/* 自主执行报告 */}

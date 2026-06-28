@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react'
 import { Link, useLocation } from 'react-router-dom'
-import { Info, FlaskConical, Atom, Activity, GitBranch, Play, BarChart, Home, Menu, X, Target, TrendingUp, AlertTriangle, User, Sun, Moon, Settings, HelpCircle, Hexagon } from 'lucide-react'
+import { Info, FlaskConical, Atom, Activity, GitBranch, Play, BarChart, Home, Menu, X, Target, TrendingUp, AlertTriangle, User, Sun, Moon, Settings, HelpCircle, Hexagon, Cpu } from 'lucide-react'
 import { useApp } from '../store/AppContext'
 import LoginModal from '../components/LoginModal'
 import SettingsModal from '../components/SettingsModal'
@@ -10,6 +10,7 @@ const navItems = [
   { path: '/', icon: Home, label: '首页' },
   { path: '/projects', icon: FlaskConical, label: '项目列表' },
   { path: '/pipeline', icon: Play, label: 'Pipeline运行' },
+  { path: '/agent-traces', icon: Cpu, label: 'Agent追踪' },
   { path: '/results', icon: BarChart, label: '结果分析' },
   { path: '/molecules', icon: Atom, label: '分子浏览器' },
   { path: '/builder', icon: Hexagon, label: '分子构建' },

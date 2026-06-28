@@ -36,6 +36,7 @@ class IntentType(Enum):
     OPTIMIZATION = "optimization"         # 优化/迭代请求
     FOLLOW_UP = "follow_up"               # 上下文依赖（基于之前结果）
     EXPLORATION = "exploration"           # 探索/发现请求
+    FULL_PIPELINE = "full_pipeline"       # 端到端全流程（从靶点到候选分子）
 
 
 @dataclass
@@ -265,7 +266,7 @@ class IntentParser:
             follow_up_patterns = [
                 "再优化", "继续优化", "再分析一下", "看看结果", "分析结果", "查看结果",
                 "继续", "下一步", "然后呢", "结果呢", "优化一下", "再生成", "重新运行",
-                "帮我分析", "分析一下", "检查", "评估一下", "看看", "对比", "比较",
+                "帮我分析", "检查一下", "评估一下", "看看", "对比", "比较",
                 "为什么", "怎么回事", "出了什么问题",
             ]
             for p in follow_up_patterns:
@@ -277,6 +278,23 @@ class IntentParser:
                         entities=[ExtractedEntity(type="project_id", value=str(project_id), confidence=0.9)],
                         detected_actions=["get_project_status", "analyze_failures", "suggest_next_step"],
                         suggested_tools=["get_project_status", "analyze_failures", "suggest_next_step"],
+                        estimated_complexity=2,
+                    )
+            
+            # P0.3: 格式化追问（用户要详细数据/报告）
+            format_patterns = [
+                "详细数据", "详细结果", "具体数据", "给我看看", "详细点", "展开说说",
+                "数据给我", "报告", "详细报告", "结果怎么样", "分子数据", "候选分子",
+            ]
+            for p in format_patterns:
+                if p in msg_lower:
+                    return ParsedIntent(
+                        primary_type=IntentType.FOLLOW_UP,
+                        confidence=0.9,
+                        original_message=message,
+                        entities=[ExtractedEntity(type="project_id", value=str(project_id), confidence=0.9)],
+                        detected_actions=["format_top_molecules"],
+                        suggested_tools=["format_top_molecules"],
                         estimated_complexity=2,
                     )
         
@@ -311,7 +329,7 @@ class IntentParser:
         
         # P2: 明显是单一靶点操作（极高置信度）
         try:
-            from ..services.target_database import search_targets
+            from ..target_database import search_targets
             targets = search_targets(message)
             if targets and len(targets) == 1:
                 action_words = ["分析", "对比", "查看", "检查", "优化", "评估", "生成", "创建"]
@@ -328,6 +346,40 @@ class IntentParser:
                     )
         except Exception:
             pass
+        
+        # P2.5: 端到端全流程请求（跑一遍XXX的全流程）
+        full_pipeline_patterns = [
+            "跑一遍", "跑通", "全流程", "端到端", "一键", "从头到尾",
+            "完整流程", "一键生成", "帮我跑", "跑个", "自动生成",
+        ]
+        for p in full_pipeline_patterns:
+            if p in msg_lower:
+                # 尝试提取靶点
+                try:
+                    from ..target_database import search_targets
+                    targets = search_targets(message)
+                    if targets:
+                        target_name = targets[0]['name'] if isinstance(targets[0], dict) else targets[0]
+                        return ParsedIntent(
+                            primary_type=IntentType.FULL_PIPELINE,
+                            confidence=0.9,
+                            original_message=message,
+                            entities=[ExtractedEntity(type="target", value=target_name, confidence=0.9)],
+                            detected_actions=["run_full_pipeline"],
+                            suggested_tools=["run_full_pipeline"],
+                            estimated_complexity=4,
+                        )
+                except Exception:
+                    pass
+                # 即使没有明确靶点，也标记为全流程意图（后续可能缺少靶点需要澄清）
+                return ParsedIntent(
+                    primary_type=IntentType.FULL_PIPELINE,
+                    confidence=0.7,
+                    original_message=message,
+                    detected_actions=["run_full_pipeline"],
+                    suggested_tools=["run_full_pipeline"],
+                    estimated_complexity=4,
+                )
         
         # P3: 明显的多意图信号
         multi_signals = ["然后", "接着", "之后", "再", "先", "最后", "同时", "顺便", "也", "还要", "以及", "和"]
@@ -370,17 +422,26 @@ class IntentParser:
 
         # 1. 靶点提取
         try:
-            from ..services.target_database import search_targets
+            from ..target_database import search_targets
             targets = search_targets(message)
             for t in targets:
-                entities.append(ExtractedEntity(type="target", value=t, confidence=0.85))
+                target_name = t['name'] if isinstance(t, dict) else t
+                entities.append(ExtractedEntity(type="target", value=target_name, confidence=0.85))
         except Exception:
             pass
 
-        # 2. 项目ID提取（数字）
-        project_ids = re.findall(r'(?:项目(?:id|ID|编号)?[:\s]*)?(\d+)', msg_lower)
-        for pid in project_ids:
-            entities.append(ExtractedEntity(type="project_id", value=pid, confidence=0.8))
+        # 2. 项目ID提取（数字）——要求前面有项目/ID/编号关键字，或数字为独立标记（至少2位）
+        project_id_patterns = [
+            r'(?:项目|project)[\s:]*(?:id|ID|编号)?[\s:]*(\d+)',
+            r'(?:id|ID|编号)[\s:]*(\d+)',
+            r'\b(\d{2,})\b',  # 独立数字（至少2位）
+        ]
+        seen_pids = set()
+        for pattern in project_id_patterns:
+            for pid in re.findall(pattern, msg_lower):
+                if pid not in seen_pids:
+                    seen_pids.add(pid)
+                    entities.append(ExtractedEntity(type="project_id", value=pid, confidence=0.8))
 
         # 3. SMILES 提取（改进版：支持显式和隐式 SMILES）
         # 方案 A：显式 SMILES 标记（如 "SMILES: CC(C)Oc1ccc(...)")
@@ -471,7 +532,7 @@ class IntentParser:
 ## 输出格式
 请返回严格的 JSON（不要 Markdown 代码块）：
 {{
-  "intent_type": "simple_chat|single_action|multi_intent|complex_analysis|conditional|clarification_needed|comparison|optimization|follow_up|exploration",
+  "intent_type": "simple_chat|single_action|multi_intent|complex_analysis|conditional|clarification_needed|comparison|optimization|follow_up|exploration|full_pipeline",
   "confidence": 0.0-1.0,
   "needs_clarification": true/false,
   "clarification_question": "如果需要澄清，提出具体问题",
@@ -495,6 +556,7 @@ class IntentParser:
 - optimization: 基于现有结果优化/迭代
 - follow_up: 基于之前对话的上下文请求
 - exploration: 探索性请求（如"有什么好靶点"）
+- full_pipeline: 端到端全流程请求（如"跑一遍HER2的全流程"、"一键生成EGFR候选分子"）
 
 ## 规则
 1. 必须返回合法的 JSON
@@ -565,11 +627,15 @@ class IntentParser:
     # ------------------------------------------------------------------
 
     def _merge_results(self, quick: Optional[ParsedIntent], llm: ParsedIntent, entities: List[ExtractedEntity]) -> ParsedIntent:
-        """合并快速检测和 LLM 解析的结果。"""
+        """合并快速检测和 LLM 解析的结果。保留快速检测中的关键实体，同时合并提取的实体。"""
         if quick and quick.confidence >= 0.8:
             # 高置信度快速检测优先
             result = quick
-            result.entities = entities
+            # 合并实体：保留 quick 的实体，同时添加提取到的新实体
+            existing = {(e.type, e.value) for e in result.entities}
+            for e in entities:
+                if (e.type, e.value) not in existing:
+                    result.entities.append(e)
             result.detected_actions = llm.detected_actions if llm.detected_actions else quick.detected_actions
             result.suggested_tools = llm.suggested_tools if llm.suggested_tools else quick.suggested_tools
         else:
@@ -583,13 +649,13 @@ class IntentParser:
 
         return result
 
-    def _detect_missing_params(self, intent: ParsedIntent) -> List[str]:
+    def _detect_missing_params(self, intent: ParsedIntent, context: Dict[str, Any] = None) -> List[str]:
         """检测缺少的必要参数。"""
         missing = []
         for action in intent.detected_actions:
-            if action in ["create_project"] and not any(e.type == "target" for e in intent.entities):
+            if action in ["create_project", "run_full_pipeline"] and not any(e.type == "target" for e in intent.entities):
                 missing.append("靶点名称")
-            if action in ["run_pipeline", "get_project_status", "analyze_failures"] and not any(e.type == "project_id" for e in intent.entities):
+            if action in ["run_pipeline", "get_project_status", "analyze_failures", "format_top_molecules"] and not any(e.type == "project_id" for e in intent.entities):
                 missing.append("项目ID")
             if action in ["analyze_selectivity", "assess_synthesis_route"] and not any(e.type == "smiles" for e in intent.entities):
                 missing.append("分子结构（SMILES）")
@@ -610,6 +676,8 @@ class IntentParser:
         relevant = []
         action_entity_map = {
             "create_project": ["target"],
+            "run_full_pipeline": ["target"],
+            "format_top_molecules": ["project_id"],
             "run_pipeline": ["project_id"],
             "get_project_status": ["project_id"],
             "analyze_molecular_diversity": ["smiles", "project_id"],

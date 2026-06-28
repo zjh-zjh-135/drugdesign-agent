@@ -270,12 +270,15 @@ def get_pdb_id_for_target(target_name: str) -> str:
 
 
 def search_targets(query: str) -> list:
-    """根据关键词搜索靶点"""
+    """根据关键词搜索靶点。支持双向匹配：查询在靶点名/描述中，或靶点名在查询中。"""
     query = query.lower()
     results = []
     for name in SORTED_TARGET_NAMES:
         info = TARGET_DATABASE[name]
-        if query in name.lower() or query in info.get('description', '').lower():
+        name_lower = name.lower()
+        desc_lower = info.get('description', '').lower()
+        # 双向匹配：query 是 name/desc 的子串，或 name 是 query 的子串
+        if query in name_lower or query in desc_lower or name_lower in query:
             results.append({
                 'name': name,
                 'description': info.get('description', '')[:100] + '...' if len(info.get('description', '')) > 100 else info.get('description', ''),

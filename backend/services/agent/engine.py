@@ -200,6 +200,18 @@ class ReActEngine:
         e. 多意图拆分 → 串行/并行执行子计划
         f. 目标导向 → Perceive → Plan → Execute → Report
         """
+        # Stage 4: 空消息拦截
+        if not user_message or not user_message.strip():
+            return {
+                "success": False,
+                "type": "error",
+                "final_answer": "消息不能为空，请输入您想执行的操作。",
+                "chat_summary": "消息不能为空",
+                "action_cards": [],
+                "steps": [],
+                "autonomous": False,
+            }
+        
         import uuid
         trace_id = str(uuid.uuid4())[:8]
         
@@ -569,7 +581,8 @@ Final Answer: [给用户的完整回答]
             if parsed_intent.primary_type in [IntentType.SINGLE_ACTION, IntentType.MULTI_INTENT, 
                                                IntentType.COMPLEX_ANALYSIS, IntentType.CONDITIONAL,
                                                IntentType.COMPARISON, IntentType.OPTIMIZATION,
-                                               IntentType.FOLLOW_UP, IntentType.EXPLORATION]:
+                                               IntentType.FOLLOW_UP, IntentType.EXPLORATION,
+                                               IntentType.FULL_PIPELINE]:
                 return {"is_chat": False, "reason": f"意图解析器判定为: {parsed_intent.primary_type.value}", "confidence": parsed_intent.confidence}
         
         # 回退到传统方法
@@ -721,6 +734,12 @@ Final Answer: [给用户的完整回答]
             # 无项目上下文且无靶点，需要表单
             return {"needs_form": True, "form_type": "project_creation"}
         
+        # 全流程意图：如果没有靶点，需要澄清
+        if parsed_intent and parsed_intent.primary_type.value == "full_pipeline":
+            if any(e.type == "target" for e in parsed_intent.entities):
+                return {"needs_form": False, "target": next(e.value for e in parsed_intent.entities if e.type == "target")}
+            return {"needs_form": True, "form_type": "clarification", "question": "请提供靶点名称（如 HER2、EGFR、BRAF 等），我将为您运行端到端全流程。"}
+        
         # 多意图且无明确实体：如果上下文有项目ID，直接执行
         if parsed_intent and parsed_intent.primary_type.value == "multi_intent":
             if project_id:
@@ -731,6 +750,12 @@ Final Answer: [给用户的完整回答]
         # 用户说"帮我分析"、"优化一下"、"查看结果"等：如果有上下文项目ID，直接执行
         action_keywords = ["分析", "优化", "查看", "检查", "评估", "调整", "对比", "运行"]
         if any(kw in msg_lower for kw in action_keywords):
+            if project_id:
+                return {"needs_form": False, "project_id": project_id}
+        
+        # 格式化追问：如果有上下文项目ID，直接执行
+        format_keywords = ["详细数据", "详细结果", "具体数据", "给我看看", "详细点", "展开说说", "数据给我", "报告", "详细报告", "结果怎么样", "分子数据", "候选分子"]
+        if any(kw in msg_lower for kw in format_keywords):
             if project_id:
                 return {"needs_form": False, "project_id": project_id}
         

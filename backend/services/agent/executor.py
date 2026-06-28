@@ -264,6 +264,27 @@ class TaskExecutor:
                 chat_summary = f"{lines[0]} ... 执行完成，详见下方报告。"
             else:
                 chat_summary = "执行完成，详见下方报告。"
+        
+        # 检测 final_answer 是否来自 final_report（完整报告格式）
+        # 如果是，生成更简短的摘要，避免摘要和报告内容重复
+        last_success_step = None
+        for s in reversed(log.steps):
+            obs = s.observation
+            if obs and isinstance(obs, dict) and obs.get("success"):
+                last_success_step = s
+                break
+        
+        if last_success_step and isinstance(last_success_step.observation, dict):
+            obs = last_success_step.observation
+            if obs.get("final_report") and len(log.final_answer) > 200:
+                # 工具已返回 final_report，生成简短摘要
+                target_name = obs.get("target_name", "")
+                num_passed = obs.get("num_passed", 0)
+                top_count = len(obs.get("top_molecules", []))
+                if target_name:
+                    chat_summary = f"🎯 {target_name} 全流程已完成，生成 {num_passed} 个候选分子，Top {top_count} 分子详见下方报告。"
+                else:
+                    chat_summary = f"任务执行完成，共 {num_passed} 个候选分子，详见下方报告。"
 
         return {
             "success": log.success,
@@ -733,6 +754,11 @@ class TaskExecutor:
         obs = last_success_step.observation
         tool = last_success_step.tool
         
+        # 如果工具已经返回了 final_report（如 run_full_pipeline、format_top_molecules），
+        # 直接使用它，避免重复生成
+        if isinstance(obs, dict) and obs.get("final_report"):
+            return obs["final_report"]
+        
         # 如果 LLM 已经提到了分子名称/ID，说明它已经包含了数据
         # 但对于特定工具，我们强制使用专业格式化，覆盖 LLM 的简陋排版
         if log.final_answer and isinstance(log.final_answer, str):
@@ -749,7 +775,9 @@ class TaskExecutor:
                 return ""
         
         # 根据工具类型构建格式化结果
-        if tool == "get_top_molecules":
+        if tool == "run_full_pipeline":
+            return self._format_run_full_pipeline(obs)
+        elif tool == "get_top_molecules":
             return self._format_top_molecules(obs)
         elif tool == "get_project_status":
             return self._format_project_status(obs)
@@ -772,6 +800,134 @@ class TaskExecutor:
         
         return ""
     
+    def _format_run_full_pipeline(self, obs: Dict) -> str:
+        """格式化 run_full_pipeline 的完整报告 — 端到端全流程结果"""
+        if not obs.get("success"):
+            return f"\n\n**全流程执行失败**：{obs.get('error', '未知错误')}"
+        
+        target_name = obs.get("target_name", "N/A")
+        target_pdb = obs.get("target_pdb", "N/A")
+        project_name = obs.get("project_name", "N/A")
+        project_id = obs.get("project_id", "N/A")
+        active_count = obs.get("active_molecules_added", 0)
+        
+        num_generated = obs.get("num_generated", 0)
+        num_passed = obs.get("num_passed", 0)
+        num_failed = obs.get("num_failed", 0)
+        elapsed = obs.get("elapsed_seconds", 0)
+        status = obs.get("pipeline_status", "unknown")
+        
+        top_molecules = obs.get("top_molecules", [])
+        
+        lines = [
+            "",
+            f"## 🎯 {target_name} 全流程完成 — 候选分子报告",
+            "",
+            f"**项目信息**：ID={project_id} | 靶点：**{target_name}** | PDB：**{target_pdb}** | 项目名称：{project_name}",
+            "",
+            "**📊 Pipeline 执行结果**",
+            "",
+            f"| 指标 | 数值 |",
+            f"|------|------|",
+            f"| 生成总数 | {num_generated} 个 |",
+            f"| 通过筛选 | {num_passed} 个 |",
+            f"| 失败 | {num_failed} 个 |",
+            f"| 执行耗时 | {elapsed} 秒 |",
+            f"| 状态 | {'✅ 完成' if status == 'completed' else '⚠️ ' + status} |",
+            "",
+        ]
+        
+        # 已知活性分子
+        if active_count > 0:
+            lines.append(f"**已知活性分子**：已自动添加 {active_count} 个作为参考")
+            lines.append("")
+        
+        # Top 分子
+        if top_molecules:
+            lines.append(f"**🏆 Top {len(top_molecules)} 候选分子**")
+            lines.append("")
+            
+            for i, mol in enumerate(top_molecules, 1):
+                score = mol.get("score") if mol.get("score") is not None else "N/A"
+                docking = mol.get("docking_score") if mol.get("docking_score") is not None else "待计算"
+                admet = mol.get("admet_score") if mol.get("admet_score") is not None else "N/A"
+                qed = mol.get("qed") if mol.get("qed") is not None else "N/A"
+                mw = mol.get("mw") if mol.get("mw") is not None else "N/A"
+                logp = mol.get("logp") if mol.get("logp") is not None else "N/A"
+                tpsa = mol.get("tpsa") if mol.get("tpsa") is not None else "N/A"
+                hbd = mol.get("hbd") if mol.get("hbd") is not None else "N/A"
+                hba = mol.get("hba") if mol.get("hba") is not None else "N/A"
+                sa = mol.get("sa_score") if mol.get("sa_score") is not None else "N/A"
+                smiles = mol.get("smiles") if mol.get("smiles") is not None else "N/A"
+                
+                # 排名 emoji
+                rank_emoji = {1: "🥇", 2: "🥈", 3: "🥉"}.get(i, f"#{i}")
+                
+                lines.append(f"### {rank_emoji} 候选分子 #{i}（综合得分：{score}）")
+                lines.append("")
+                lines.append(f"- **SMILES**：`{smiles}`")
+                lines.append(f"- **分子量 (MW)**：{mw} | **LogP**：{logp} | **QED**：{qed}")
+                lines.append(f"- **对接分数**：{docking} | **ADMET 得分**：{admet} | **SA Score**：{sa}")
+                lines.append(f"- **TPSA**：{tpsa} | **HBD**：{hbd} | **HBA**：{hba}")
+                
+                # 自动评价
+                evaluations = []
+                if qed is not None and qed != "N/A" and qed > 0.7:
+                    evaluations.append("QED 优秀")
+                if admet is not None and admet != "N/A" and admet > 70:
+                    evaluations.append("ADMET 良好")
+                if docking is not None and docking != "N/A" and docking < -7:
+                    evaluations.append("对接强")
+                if sa is not None and sa != "N/A" and sa < 3.5:
+                    evaluations.append("合成可及")
+                
+                if evaluations:
+                    lines.append(f"- **亮点**：{'、'.join(evaluations)}")
+                
+                lines.append("")
+            
+            # 下一步建议
+            lines.append("**💡 下一步建议**")
+            lines.append("")
+            
+            # 基于 Top 1 的建议
+            if top_molecules:
+                top1 = top_molecules[0]
+                top1_qed = top1.get("qed")
+                top1_admet = top1.get("admet_score")
+                top1_docking = top1.get("docking_score")
+                top1_sa = top1.get("sa_score")
+                
+                suggestions = []
+                if top1_qed is not None and top1_qed > 0.7:
+                    suggestions.append(f"候选分子 #1 的 QED（{top1_qed}）表现优秀，药物相似性高，建议优先合成验证")
+                if top1_admet is not None and top1_admet > 70:
+                    suggestions.append(f"ADMET 得分（{top1_admet}）良好，药代动力学风险可控")
+                if top1_sa is not None and top1_sa > 4:
+                    suggestions.append(f"注意：SA Score（{top1_sa}）偏高，合成难度可能较大，建议评估合成路线")
+                
+                if len(top_molecules) > 1:
+                    top2 = top_molecules[1]
+                    top2_sa = top2.get("sa_score")
+                    if top2_sa is not None and top1_sa is not None and top2_sa < top1_sa:
+                        suggestions.append(f"候选分子 #2 的合成可及性（SA={top2_sa}）优于 #1，可作为成本优先的备选")
+                
+                if not suggestions:
+                    suggestions.append("建议对 Top 候选分子进行 FEP 精修和合成路线评估")
+                
+                for i, sug in enumerate(suggestions, 1):
+                    lines.append(f"{i}. {sug}")
+                lines.append("")
+        else:
+            lines.append("**⚠️ 暂无通过合成筛选的候选分子**")
+            lines.append("")
+            if num_failed > 0:
+                lines.append(f"- 所有 {num_failed} 个分子在筛选中失败，建议分析失败原因并调整参数")
+                lines.append("- 可尝试：降低 ADMET 阈值、放宽相似度限制、增加生成分子数量")
+            lines.append("")
+        
+        return "\n".join(lines)
+    
     def _format_top_molecules(self, obs: Dict) -> str:
         """格式化 Top 分子结果"""
         count = obs.get("count", 0)
@@ -781,16 +937,26 @@ class TaskExecutor:
         
         lines = ["\n\n---\n\n**Top 候选分子**", ""]
         for i, mol in enumerate(molecules, 1):
-            lines.append(f"**{i}. {mol.get('id', '未知')}**")
-            lines.append(f"- SMILES: `{mol.get('smiles', 'N/A')}`")
-            lines.append(f"- 综合得分: {mol.get('score', 'N/A')}")
-            lines.append(f"- 对接分数: {mol.get('docking_score', 'N/A')}")
-            lines.append(f"- ADMET 分数: {mol.get('admet_score', 'N/A')}")
-            lines.append(f"- QED: {mol.get('qed', 'N/A')}")
-            lines.append(f"- 分子量: {mol.get('mw', 'N/A')}")
-            lines.append(f"- LogP: {mol.get('logp', 'N/A')}")
-            lines.append(f"- SA Score: {mol.get('sa_score', 'N/A')}")
-            lines.append(f"- 生成策略: {mol.get('generation_strategy', 'N/A')}")
+            mol_id = mol.get("id") if mol.get("id") is not None else "未知"
+            smiles = mol.get("smiles") if mol.get("smiles") is not None else "N/A"
+            score = mol.get("score") if mol.get("score") is not None else "N/A"
+            docking = mol.get("docking_score") if mol.get("docking_score") is not None else "待计算"
+            admet = mol.get("admet_score") if mol.get("admet_score") is not None else "N/A"
+            qed = mol.get("qed") if mol.get("qed") is not None else "N/A"
+            mw = mol.get("mw") if mol.get("mw") is not None else "N/A"
+            logp = mol.get("logp") if mol.get("logp") is not None else "N/A"
+            sa = mol.get("sa_score") if mol.get("sa_score") is not None else "N/A"
+            strategy = mol.get("generation_strategy") if mol.get("generation_strategy") is not None else "N/A"
+            lines.append(f"**{i}. {mol_id}**")
+            lines.append(f"- SMILES: `{smiles}`")
+            lines.append(f"- 综合得分: {score}")
+            lines.append(f"- 对接分数: {docking}")
+            lines.append(f"- ADMET 分数: {admet}")
+            lines.append(f"- QED: {qed}")
+            lines.append(f"- 分子量: {mw}")
+            lines.append(f"- LogP: {logp}")
+            lines.append(f"- SA Score: {sa}")
+            lines.append(f"- 生成策略: {strategy}")
             lines.append("")
         return "\n".join(lines)
     
