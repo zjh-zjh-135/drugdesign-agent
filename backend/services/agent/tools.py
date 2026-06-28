@@ -1343,13 +1343,403 @@ def to_langchain_tools() -> list:
 # 这些工具保留原有 dict 返回格式，供内部代码使用
 # LangChain 外部使用 to_langchain_tools() 获取字符串版本
 
+
+
+
+# ========== 阶段1新增：高优先级工具（7个） ==========
+
+@register_tool(
+    "search_targets",
+    "在靶点数据库中搜索靶点（支持关键词匹配靶点名称和描述）",
+    {
+        "query": {"type": "string", "description": "搜索关键词（靶点名称或相关词汇，如EGFR、AKT1、激酶）", "required": True}
+    }
+)
+def search_targets(query: str) -> Dict:
+    """搜索靶点数据库，返回匹配的靶点列表"""
+    try:
+        from ...services.target_database import search_targets as _search_targets
+        results = _search_targets(query)
+        if not results:
+            return {
+                "success": True,
+                "count": 0,
+                "results": [],
+                "message": f"未找到与 '{query}' 匹配的靶点。请尝试其他关键词，如具体的靶点名称（EGFR、AKT1、HER2等）。"
+            }
+        return {
+            "success": True,
+            "count": len(results),
+            "results": results,
+            "message": f"找到 {len(results)} 个匹配的靶点。"
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@register_tool(
+    "get_target_info",
+    "获取靶点详细信息（描述、PDB ID、已知活性分子、上市药物）",
+    {
+        "target_name": {"type": "string", "description": "靶点名称（如AKT1、EGFR、HER2）", "required": True}
+    }
+)
+def get_target_info(target_name: str) -> Dict:
+    """获取靶点详细信息"""
+    try:
+        from ...services.target_database import get_target_info as _get_target_info
+        info = _get_target_info(target_name)
+        if not info or not info.get('description'):
+            return {
+                "success": False,
+                "error": f"未找到靶点 '{target_name}' 的信息。请使用 search_targets 工具搜索正确的靶点名称。"
+            }
+        
+        active_molecules = info.get('active_molecules', [])
+        molecules_text = []
+        for mol in active_molecules:
+            molecules_text.append(f"- {mol.get('name', '未知')}: SMILES={mol.get('smiles', 'N/A')}, IC50={mol.get('ic50', 'N/A')} μM")
+        
+        return {
+            "success": True,
+            "target_name": target_name,
+            "description": info.get('description', ''),
+            "pdb_id": info.get('pdb_id', ''),
+            "active_molecules_count": len(active_molecules),
+            "active_molecules": active_molecules,
+            "message": f"**{target_name}** 靶点信息\n\n{info.get('description', '')}\n\n**推荐 PDB ID**: {info.get('pdb_id', 'N/A')}\n\n**已知活性分子（{len(active_molecules)}个）**:\n" + "\n".join(molecules_text)
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@register_tool(
+    "run_docking",
+    "对分子进行AutoDock Vina分子对接（评估配体与靶点蛋白的结合能力）",
+    {
+        "smiles": {"type": "string", "description": "配体分子SMILES字符串", "required": True},
+        "receptor_pdb": {"type": "string", "description": "受体蛋白PDB ID（如4EKL）或PDB文件路径/内容", "required": True},
+        "center_x": {"type": "number", "description": "对接盒子中心X坐标", "required": False, "default": 0.0},
+        "center_y": {"type": "number", "description": "对接盒子中心Y坐标", "required": False, "default": 0.0},
+        "center_z": {"type": "number", "description": "对接盒子中心Z坐标", "required": False, "default": 0.0},
+        "size_x": {"type": "number", "description": "对接盒子X方向大小（埃）", "required": False, "default": 20.0},
+        "size_y": {"type": "number", "description": "对接盒子Y方向大小（埃）", "required": False, "default": 20.0},
+        "size_z": {"type": "number", "description": "对接盒子Z方向大小（埃）", "required": False, "default": 20.0},
+        "exhaustiveness": {"type": "integer", "description": "搜索详尽度（1-32，越大越慢但越准）", "required": False, "default": 8}
+    }
+)
+def run_docking(
+    smiles: str, receptor_pdb: str,
+    center_x: float = 0.0, center_y: float = 0.0, center_z: float = 0.0,
+    size_x: float = 20.0, size_y: float = 20.0, size_z: float = 20.0,
+    exhaustiveness: int = 8
+) -> Dict:
+    """运行分子对接"""
+    try:
+        from ...services.docking import run_docking as _run_docking
+        
+        # 如果 receptor_pdb 是 PDB ID，尝试自动下载
+        pdb_content = receptor_pdb
+        if len(receptor_pdb) <= 6 and not receptor_pdb.endswith('.pdb'):
+            # 可能是 PDB ID，尝试下载
+            try:
+                from ...routes.docking import fetch_pdb_from_rcsb
+                pdb_data = fetch_pdb_from_rcsb(receptor_pdb)
+                if pdb_data and pdb_data.get('content'):
+                    pdb_content = pdb_data['content']
+            except Exception:
+                pass  # 回退使用原始值
+        
+        result = _run_docking(
+            ligand_smiles=smiles,
+            receptor_pdb=pdb_content,
+            center_x=center_x, center_y=center_y, center_z=center_z,
+            size_x=size_x, size_y=size_y, size_z=size_z,
+            exhaustiveness=exhaustiveness
+        )
+        
+        if not result or not result.get('success'):
+            error_msg = result.get('error', '未知错误') if result else '对接失败'
+            return {
+                "success": False,
+                "error": f"分子对接失败: {error_msg}。可能原因：Vina未安装、PDB格式错误、或SMILES无效。"
+            }
+        
+        best_affinity = result.get('best_affinity', 'N/A')
+        poses = result.get('poses', [])
+        
+        poses_summary = []
+        for i, pose in enumerate(poses[:3], 1):
+            poses_summary.append(f"- 构象{i}: 结合能={pose.get('affinity', 'N/A')} kcal/mol, RMSD={pose.get('rmsd_ub', 'N/A')}")
+        
+        return {
+            "success": True,
+            "smiles": smiles,
+            "best_affinity": best_affinity,
+            "poses_count": len(poses),
+            "poses": poses,
+            "message": (
+                f"**分子对接完成**\n\n"
+                f"- 配体 SMILES: `{smiles[:50]}...`\n"
+                f"- 最佳结合能: **{best_affinity} kcal/mol**\n"
+                f"- 构象数量: {len(poses)}\n\n"
+                f"**Top 3 构象**:\n" + "\n".join(poses_summary) + "\n\n"
+                f"结合能 <-6 kcal/mol 通常表示较强的结合力，<-8 表示非常强。"
+            )
+        }
+    except Exception as e:
+        return {"success": False, "error": f"分子对接执行异常: {str(e)}"}
+
+
+@register_tool(
+    "analyze_synthesis",
+    "分析分子的逆合成路线和合成可及性（评估能否合成、合成难度、成本估算）",
+    {
+        "smiles": {"type": "string", "description": "目标分子SMILES字符串", "required": True}
+    }
+)
+def analyze_synthesis(smiles: str) -> Dict:
+    """分析分子逆合成路线"""
+    try:
+        from ...services.synthesis import SynthesisAnalyzer
+        analyzer = SynthesisAnalyzer()
+        result = analyzer.analyze(smiles)
+        
+        if result.get('error'):
+            return {
+                "success": False,
+                "error": f"合成分析失败: {result.get('error')}"
+            }
+        
+        num_steps = result.get('num_steps', 0)
+        estimated_cost = result.get('estimated_cost', 'N/A')
+        availability_score = result.get('availability_score', 'N/A')
+        total_yield = result.get('total_yield', 'N/A')
+        route = result.get('route', {})
+        
+        # 构建路线摘要
+        route_summary = []
+        steps = route.get('steps', [])
+        if steps:
+            for i, step in enumerate(steps, 1):
+                reagents = ', '.join(step.get('reagents', [])) or 'N/A'
+                conditions = step.get('conditions', 'N/A')
+                route_summary.append(f"{i}. {step.get('reaction_name', '反应')} — 试剂: {reagents} — 条件: {conditions}")
+        
+        return {
+            "success": True,
+            "smiles": smiles,
+            "num_steps": num_steps,
+            "estimated_cost": estimated_cost,
+            "availability_score": availability_score,
+            "total_yield": total_yield,
+            "route": route,
+            "message": (
+                f"**逆合成分析完成**\n\n"
+                f"- 目标分子: `{smiles[:50]}...`\n"
+                f"- 合成步数: **{num_steps} 步**\n"
+                f"- 总收率: {total_yield}\n"
+                f"- 估算成本: {estimated_cost}\n"
+                f"- 合成可及性评分: **{availability_score}** (0-1，越高越容易合成)\n\n"
+                f"**合成路线**:\n" + "\n".join(route_summary) + "\n\n"
+                f"可及性评分 > 0.5 表示合成难度适中，< 0.3 表示合成难度较大。"
+            )
+        }
+    except Exception as e:
+        return {"success": False, "error": f"合成分析异常: {str(e)}"}
+
+
+@register_tool(
+    "predict_activity",
+    "预测分子对靶点的生物活性（pIC50/pKi/pEC50/pKd），支持基于QSAR模型或描述符估算",
+    {
+        "smiles": {"type": "string", "description": "分子SMILES字符串", "required": True},
+        "model_name": {"type": "string", "description": "QSAR模型名称（默认使用default模型）", "required": False, "default": "default"},
+        "activity_type": {"type": "string", "description": "活性类型（IC50/Ki/EC50/KD）", "required": False, "default": "IC50"}
+    }
+)
+def predict_activity(smiles: str, model_name: str = 'default', activity_type: str = 'IC50') -> Dict:
+    """预测分子活性"""
+    try:
+        from ...services.activity import predict_activity as _predict_activity
+        result = _predict_activity(smiles, model_name, activity_type)
+        
+        if not result:
+            return {
+                "success": False,
+                "error": "活性预测失败。可能原因：模型未训练、SMILES无效。"
+            }
+        
+        predicted_value = result.get('predicted_value', 'N/A')
+        unit = result.get('unit', 'N/A')
+        confidence = result.get('confidence', 'N/A')
+        model_used = result.get('model_used', 'N/A')
+        
+        return {
+            "success": True,
+            "smiles": smiles,
+            "predicted_value": predicted_value,
+            "unit": unit,
+            "confidence": confidence,
+            "model_used": model_used,
+            "message": (
+                f"**活性预测完成**\n\n"
+                f"- 分子: `{smiles[:50]}...`\n"
+                f"- 预测活性: **{predicted_value} {unit}**\n"
+                f"- 置信度: {confidence}\n"
+                f"- 模型来源: {model_used}\n\n"
+                f"pIC50 > 7 通常表示高活性（<100 nM），pIC50 > 8 表示非常强（<10 nM）。"
+            )
+        }
+    except Exception as e:
+        return {"success": False, "error": f"活性预测异常: {str(e)}"}
+
+
+@register_tool(
+    "train_qsar_model",
+    "训练QSAR模型用于活性预测（需要至少5个带有活性数据的分子）",
+    {
+        "smiles_list": {"type": "array", "description": "训练分子SMILES列表（至少5个）", "required": True},
+        "activity_list": {"type": "array", "description": "对应活性值列表（如IC50数值，单位nM）", "required": True},
+        "model_name": {"type": "string", "description": "模型名称（用于后续调用）", "required": False, "default": "default"},
+        "activity_type": {"type": "string", "description": "活性类型（IC50/Ki/EC50/KD）", "required": False, "default": "IC50"}
+    }
+)
+def train_qsar_model(smiles_list: List[str], activity_list: List[float], model_name: str = 'default', activity_type: str = 'IC50') -> Dict:
+    """训练QSAR模型"""
+    try:
+        if len(smiles_list) < 5:
+            return {
+                "success": False,
+                "error": f"训练QSAR模型需要至少5个分子，当前只有 {len(smiles_list)} 个。请提供更多带有活性数据的分子。"
+            }
+        if len(smiles_list) != len(activity_list):
+            return {
+                "success": False,
+                "error": f"SMILES列表({len(smiles_list)}个)与活性列表({len(activity_list)}个)长度不匹配。"
+            }
+        
+        from ...services.activity import train_qsar_model as _train_qsar_model
+        result = _train_qsar_model(smiles_list, activity_list, model_name, activity_type)
+        
+        if not result:
+            return {
+                "success": False,
+                "error": "模型训练失败。请检查输入数据是否有效。"
+            }
+        
+        r2 = result.get('r2', 'N/A')
+        rmse = result.get('rmse', 'N/A')
+        num_train = result.get('num_train', len(smiles_list))
+        
+        return {
+            "success": True,
+            "model_name": model_name,
+            "activity_type": activity_type,
+            "r2": r2,
+            "rmse": rmse,
+            "num_train": num_train,
+            "message": (
+                f"**QSAR模型训练完成**\n\n"
+                f"- 模型名称: {model_name}\n"
+                f"- 活性类型: {activity_type}\n"
+                f"- 训练样本数: {num_train}\n"
+                f"- R² 决定系数: **{r2}** (越接近1越好)\n"
+                f"- RMSE: {rmse}\n\n"
+                f"现在可以使用 predict_activity 工具，传入 model_name='{model_name}' 来预测新分子活性。"
+            )
+        }
+    except Exception as e:
+        return {"success": False, "error": f"模型训练异常: {str(e)}"}
+
+
+@register_tool(
+    "get_3d_structure",
+    "获取分子的3D结构（支持SDF/PDB/XYZ格式，可用于对接、可视化）",
+    {
+        "smiles": {"type": "string", "description": "分子SMILES字符串", "required": True},
+        "format": {"type": "string", "description": "输出格式（sdf/pdb/xyz）", "required": False, "default": "sdf"}
+    }
+)
+def get_3d_structure(smiles: str, format: str = 'sdf') -> Dict:
+    """获取分子3D结构"""
+    try:
+        from ...services.structure import get_molecule_structure, get_structure_info
+        from ...services.utils import validate_smiles
+        
+        structure = get_molecule_structure(smiles, format)
+        if not structure:
+            return {
+                "success": False,
+                "error": "3D结构生成失败。请检查SMILES是否有效。"
+            }
+        
+        info = get_structure_info(smiles) or {}
+        
+        return {
+            "success": True,
+            "smiles": smiles,
+            "format": format,
+            "structure": structure,
+            "num_atoms": info.get('num_atoms', 'N/A'),
+            "num_bonds": info.get('num_bonds', 'N/A'),
+            "center": info.get('center', {}),
+            "message": (
+                f"**3D结构生成完成**\n\n"
+                f"- 分子: `{smiles[:50]}...`\n"
+                f"- 格式: {format.upper()}\n"
+                f"- 原子数: {info.get('num_atoms', 'N/A')}\n"
+                f"- 键数: {info.get('num_bonds', 'N/A')}\n"
+                f"- 分子中心: {info.get('center', {})}\n\n"
+                f"结构数据已生成，可用于分子对接或3D可视化。"
+            )
+        }
+    except Exception as e:
+        return {"success": False, "error": f"3D结构生成异常: {str(e)}"}
+
+
+# ========== 阶段1增强：现有工具功能扩展 ==========
+
+@register_tool(
+    "analyze_molecule_admet_batch",
+    "批量分析多个分子的ADMET性质（五维预测：吸收、分布、代谢、排泄、毒性）",
+    {
+        "smiles_list": {"type": "array", "description": "SMILES字符串列表", "required": True}
+    }
+)
+def analyze_molecule_admet_batch(smiles_list: List[str]) -> Dict:
+    """批量分析分子ADMET性质"""
+    try:
+        from ...services.admet import AdmetPredictor
+        results = []
+        for smiles in smiles_list:
+            result = AdmetPredictor.predict(smiles)
+            results.append({
+                "smiles": smiles,
+                "overall_score": result.get('overall_score', 'N/A'),
+                "drug_likeness": result.get('drug_likeness', 'N/A'),
+                "key_alerts": [a.get('description', '') for a in result.get('alerts', [])]
+            })
+        
+        return {
+            "success": True,
+            "count": len(results),
+            "results": results,
+            "message": f"已完成 {len(results)} 个分子的ADMET分析。"
+        }
+    except Exception as e:
+        return {"success": False, "error": f"批量ADMET分析异常: {str(e)}"}
+
+
+# ========== 导出列表（更新） ==========
+
 __all__ = [
     # 原有接口
     "get_registry",
     "register_tool",
     # Phase 2 新增
     "to_langchain_tools",
-    # 工具函数（保留原有导出）
+    # 原有工具函数
     "create_project",
     "list_projects",
     "run_pipeline",
@@ -1361,4 +1751,13 @@ __all__ = [
     "get_failed_molecules",
     "get_top_molecules",
     "analyze_single_molecule_admet",
+    # 阶段1新增工具
+    "search_targets",
+    "get_target_info",
+    "run_docking",
+    "analyze_synthesis",
+    "predict_activity",
+    "train_qsar_model",
+    "get_3d_structure",
+    "analyze_molecule_admet_batch",
 ]

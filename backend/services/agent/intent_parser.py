@@ -347,7 +347,86 @@ class IntentParser:
         except Exception:
             pass
         
-        # P2.5: 端到端全流程请求（跑一遍XXX的全流程）
+        # P2.1: 新工具检测 — 分子对接相关
+        docking_patterns = ["对接", "docking", "结合能", "affinity", "vina", "bind", "pose"]
+        if any(p in msg_lower for p in docking_patterns):
+            try:
+                from ..target_database import search_targets
+                targets = search_targets(message)
+                target_entity = [ExtractedEntity(type="target", value=targets[0]['name'] if isinstance(targets[0], dict) else targets[0], confidence=0.8)] if targets else []
+            except Exception:
+                target_entity = []
+            return ParsedIntent(
+                primary_type=IntentType.SINGLE_ACTION,
+                confidence=0.85,
+                original_message=message,
+                entities=target_entity,
+                detected_actions=["run_docking"],
+                suggested_tools=["run_docking"],
+                estimated_complexity=3,
+            )
+        
+        # P2.2: 新工具检测 — 逆合成/合成分析相关
+        synthesis_patterns = ["合成路线", "逆合成", "retrosynthesis", "synthesis", "能合成吗", "合成难度", "怎么合成", "如何合成"]
+        if any(p in msg_lower for p in synthesis_patterns):
+            return ParsedIntent(
+                primary_type=IntentType.SINGLE_ACTION,
+                confidence=0.85,
+                original_message=message,
+                detected_actions=["analyze_synthesis"],
+                suggested_tools=["analyze_synthesis"],
+                estimated_complexity=2,
+            )
+        
+        # P2.3: 新工具检测 — 靶点查询相关
+        target_query_patterns = ["查一下靶点", "有什么靶点", "target database", "靶点数据库", "靶点信息", "target info", "targets"]
+        if any(p in msg_lower for p in target_query_patterns):
+            return ParsedIntent(
+                primary_type=IntentType.SINGLE_ACTION,
+                confidence=0.85,
+                original_message=message,
+                detected_actions=["search_targets", "get_target_info"],
+                suggested_tools=["search_targets", "get_target_info"],
+                estimated_complexity=2,
+            )
+        
+        # P2.4: 新工具检测 — 3D结构相关
+        structure_3d_patterns = ["3d结构", "3d structure", "sdf文件", "pdb格式", "xyz文件", "三维结构", "3d model"]
+        if any(p in msg_lower for p in structure_3d_patterns):
+            return ParsedIntent(
+                primary_type=IntentType.SINGLE_ACTION,
+                confidence=0.85,
+                original_message=message,
+                detected_actions=["get_3d_structure"],
+                suggested_tools=["get_3d_structure"],
+                estimated_complexity=2,
+            )
+        
+        # P2.5: 新工具检测 — 活性预测相关
+        activity_patterns = ["预测活性", "predict activity", "ic50", "pic50", "pki", "pec50", "pkd", "qsar", "活性预测"]
+        if any(p in msg_lower for p in activity_patterns):
+            return ParsedIntent(
+                primary_type=IntentType.SINGLE_ACTION,
+                confidence=0.85,
+                original_message=message,
+                detected_actions=["predict_activity"],
+                suggested_tools=["predict_activity"],
+                estimated_complexity=2,
+            )
+        
+        # P2.6: 新工具检测 — QSAR模型训练相关
+        qsar_train_patterns = ["训练模型", "train model", "训练qsar", "qsar训练", "build model"]
+        if any(p in msg_lower for p in qsar_train_patterns):
+            return ParsedIntent(
+                primary_type=IntentType.SINGLE_ACTION,
+                confidence=0.85,
+                original_message=message,
+                detected_actions=["train_qsar_model"],
+                suggested_tools=["train_qsar_model"],
+                estimated_complexity=3,
+            )
+        
+        # P2.7: 端到端全流程请求（跑一遍XXX的全流程）
         full_pipeline_patterns = [
             "跑一遍", "跑通", "全流程", "端到端", "一键", "从头到尾",
             "完整流程", "一键生成", "帮我跑", "跑个", "自动生成",
