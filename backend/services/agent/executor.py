@@ -185,7 +185,9 @@ class TaskExecutor:
                 new_steps = decision.get("new_steps", [])
                 # 防御：确保 new_steps 是列表，且每个元素是字典
                 if isinstance(new_steps, list) and new_steps:
-                    new_steps = [s for s in new_steps if isinstance(s, dict) and s.get("tool")]
+                    # P1修复: 验证工具名是否在注册表中
+                    valid_tools = set(self.tools.keys())
+                    new_steps = [s for s in new_steps if isinstance(s, dict) and s.get("tool") in valid_tools]
                     if new_steps:
                         # Replace remaining steps with the new plan
                         current_steps = current_steps[: step_index + 1] + new_steps
