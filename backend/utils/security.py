@@ -65,7 +65,7 @@ def _init_audit_db():
 
 
 def log_action(endpoint, method, ip, user_agent, request_data, status_code, error=None):
-    """记录操作日志"""
+    """记录操作日志（P1修复: 自动清理旧日志，防止无限膨胀）"""
     import json
     try:
         Session = _init_audit_db()
@@ -81,6 +81,19 @@ def log_action(endpoint, method, ip, user_agent, request_data, status_code, erro
         )
         db.add(log)
         db.commit()
+        
+        # P1修复: 自动清理超过10000条的旧日志
+        try:
+            from sqlalchemy import func
+            count = db.query(func.count(AuditLog.id)).scalar()
+            if count and count > 10000:
+                old_logs = db.query(AuditLog).order_by(AuditLog.created_at.asc()).limit(count - 10000).all()
+                for old_log in old_logs:
+                    db.delete(old_log)
+                db.commit()
+        except Exception:
+            db.rollback()
+        
         db.close()
     except Exception:
         pass  # 日志记录不应阻塞主业务
