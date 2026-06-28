@@ -162,6 +162,23 @@ def run_pipeline(project_id: int, num_molecules: int = 500,
                  generation_strategy: str = "crem", similarity_threshold: float = 0.3,
                  admet_threshold: float = 60, availability_threshold: float = 0.35) -> Dict:
     """运行 Pipeline"""
+    # 强制修正参数到合理范围，防止Agent传极端值导致全灭
+    if num_molecules < 100:
+        num_molecules = 500
+    elif num_molecules > 5000:
+        num_molecules = 5000
+    
+    similarity_threshold = max(0.1, min(float(similarity_threshold), 0.5))
+    
+    admet_threshold = float(admet_threshold)
+    if admet_threshold < 1:
+        admet_threshold = 50
+    elif admet_threshold > 100:
+        admet_threshold = 100
+    
+    availability_threshold = max(0.1, min(float(availability_threshold), 0.35))
+    
+    print(f"[run_pipeline] 修正后参数: num={num_molecules}, sim={similarity_threshold}, admet={admet_threshold}, avail={availability_threshold}")
     db = _get_db()
     try:
         project = _get_project(db, project_id)
@@ -943,6 +960,23 @@ def run_full_pipeline(project_id: int, target_name: str, num_molecules: int = 10
     端到端全流程：基于已有项目运行Pipeline。必须先创建项目，然后指定项目ID运行。
     步骤：验证项目 -> 获取/更新PDB ID -> 添加活性分子 -> 运行Pipeline -> 等待完成 -> 获取Top候选分子
     """
+    # 强制修正参数到合理范围，防止Agent传极端值
+    if num_molecules < 100:
+        num_molecules = 1000
+    elif num_molecules > 5000:
+        num_molecules = 5000
+    
+    similarity_threshold = max(0.1, min(float(similarity_threshold), 0.5))
+    
+    admet_threshold = float(admet_threshold)
+    if admet_threshold < 1:
+        admet_threshold = 50
+    elif admet_threshold > 100:
+        admet_threshold = 100
+    
+    availability_threshold = max(0.1, min(float(availability_threshold), 0.35))
+    
+    print(f"[run_full_pipeline] 修正后参数: num={num_molecules}, sim={similarity_threshold}, admet={admet_threshold}, avail={availability_threshold}")
     from ...services.target_database import get_pdb_id_for_target, get_active_molecules_for_target
     from ...models.database import get_db_session, Project, ActiveMolecule
     
