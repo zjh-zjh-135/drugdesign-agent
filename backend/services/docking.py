@@ -296,12 +296,12 @@ log = {log_file}
                 size_x, size_y, size_z, exhaustiveness, num_modes
             )
     finally:
-        # 清理临时文件
-        import shutil
+        # 清理临时文件（P1修复: 记录清理失败日志）
+        import shutil, logging
         try:
             shutil.rmtree(work_dir)
-        except Exception:
-            pass
+        except Exception as e:
+            logging.getLogger('docking').warning(f'Failed to clean temp dir {work_dir}: {e}')
 
 
 def _simulate_docking(

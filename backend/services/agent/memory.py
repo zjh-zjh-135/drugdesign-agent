@@ -255,6 +255,10 @@ def save_long_term_memory(db, category: str, key: str, value: Any,
 
 def search_long_term_memory(db, query: str, category: str = None, limit: int = 10) -> List[Dict]:
     """搜索长期记忆（简单关键词匹配）"""
+    # P1修复: 限制搜索词长度，防止DoS
+    if not query or len(query) > 100:
+        return []
+    
     q = db.query(LongTermMemory)
     
     if category:

@@ -68,6 +68,33 @@ def create_app():
     # 初始化数据库
     init_db()
     
+    # P1修复: 启动时扫描僵尸PipelineRun（中断后状态仍为running）
+    try:
+        from .models.database import PipelineRun
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+        from ..config import DB_PATH
+        from sqlalchemy.pool import NullPool
+        engine = create_engine(f'sqlite:///{DB_PATH}', poolclass=NullPool)
+        SessionZombie = sessionmaker(bind=engine, expire_on_commit=False)
+        db_zombie = SessionZombie()
+        from datetime import datetime, timedelta
+        cutoff = datetime.now() - timedelta(hours=1)
+        zombie_runs = db_zombie.query(PipelineRun).filter(
+            PipelineRun.status == 'running',
+            PipelineRun.start_time < cutoff
+        ).all()
+        for run in zombie_runs:
+            run.status = 'failed'
+            run.end_time = datetime.now()
+        db_zombie.commit()
+        db_zombie.close()
+        if zombie_runs:
+            import logging
+            logging.getLogger('app').warning(f'Recovered {len(zombie_runs)} zombie pipeline runs')
+    except Exception:
+        pass  # 启动清理不应阻塞应用启动
+    
     # 确保静态目录存在
     os.makedirs(MOLECULE_IMG_DIR, exist_ok=True)
     os.makedirs(STATIC_DIR, exist_ok=True)
