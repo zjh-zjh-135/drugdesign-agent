@@ -17,7 +17,7 @@ import requests
 
 KIMI_API_KEY = os.environ.get("KIMI_API_KEY", "")
 KIMI_API_URL = "https://api.moonshot.cn/v1/chat/completions"
-DEFAULT_MODEL = "moonshot-v1-8k"
+DEFAULT_MODEL = "moonshot-v1-32k"
 MAX_STEPS = 10
 
 
@@ -134,13 +134,21 @@ class TaskPlanner:
     # ------------------------------------------------------------------
 
     def _build_tools_description(self, tools: List[Dict]) -> str:
-        """构建工具描述文本（供 Prompt 模板使用）。"""
+        """构建精简工具描述文本（供 Prompt 模板使用）。
+        
+        只保留工具名、描述和参数名列表，避免完整 JSON 参数展开导致 prompt 过长。
+        """
         tools_desc = []
         for t in tools:
-            params = json.dumps(t.get("parameters", {}), ensure_ascii=False, indent=2)
-            tools_desc.append(
-                f"- {t.get('name', 'unknown')}: {t.get('description', '')}\n  参数: {params}"
-            )
+            name = t.get('name', 'unknown')
+            desc = t.get('description', '')
+            # 只保留参数名列表，不展开完整 JSON 描述
+            params = t.get('parameters', {})
+            if params:
+                param_names = ", ".join(params.keys())
+            else:
+                param_names = "无"
+            tools_desc.append(f"- {name}: {desc} (参数: {param_names})")
         return "\n".join(tools_desc) if tools_desc else "（当前无可用工具）"
 
     def _build_intent_text(self, intent_context: Dict[str, Any]) -> str:

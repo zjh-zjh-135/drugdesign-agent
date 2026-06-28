@@ -20,7 +20,7 @@ class AgentConfig:
     # LLM API
     KIMI_API_KEY: str = os.environ.get("KIMI_API_KEY", "")
     KIMI_API_URL: str = os.environ.get("KIMI_API_URL", "https://api.moonshot.cn/v1/chat/completions")
-    DEFAULT_MODEL: str = os.environ.get("KIMI_DEFAULT_MODEL", "moonshot-v1-8k")
+    DEFAULT_MODEL: str = os.environ.get("KIMI_DEFAULT_MODEL", "moonshot-v1-32k")
     
     # Agent behavior
     MAX_STEPS: int = int(os.environ.get("KIMI_MAX_STEPS", "10"))

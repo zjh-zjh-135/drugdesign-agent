@@ -21,7 +21,7 @@ import requests
 
 KIMI_API_KEY = os.environ.get("KIMI_API_KEY", "")
 KIMI_API_URL = "https://api.moonshot.cn/v1/chat/completions"
-DEFAULT_MODEL = "moonshot-v1-8k"
+DEFAULT_MODEL = "moonshot-v1-32k"
 
 
 class IntentType(Enum):

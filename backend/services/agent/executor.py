@@ -21,7 +21,7 @@ from .tools import get_registry
 
 KIMI_API_KEY = os.environ.get("KIMI_API_KEY", "")
 KIMI_API_URL = "https://api.moonshot.cn/v1/chat/completions"
-DEFAULT_MODEL = "moonshot-v1-8k"
+DEFAULT_MODEL = "moonshot-v1-32k"
 LLM_CALL_INTERVAL = 1.0  # seconds between LLM calls to respect rate limits
 STEP_TIMEOUT = 300  # seconds per step
 MAX_RETRIES = 2

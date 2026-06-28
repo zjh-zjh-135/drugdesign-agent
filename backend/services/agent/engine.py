@@ -23,7 +23,7 @@ import requests
 
 KIMI_API_KEY = os.environ.get("KIMI_API_KEY", "")
 KIMI_API_URL = "https://api.moonshot.cn/v1/chat/completions"
-DEFAULT_MODEL = "moonshot-v1-8k"
+DEFAULT_MODEL = "moonshot-v1-32k"
 
 # 常见药物靶点名称
 # KNOWN_TARGETS 从 target_database 动态加载，避免硬编码与数据库不同步
