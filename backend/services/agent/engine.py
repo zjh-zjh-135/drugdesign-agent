@@ -337,6 +337,49 @@ class ReActEngine:
     def _execute_goal_oriented(self, user_message: str, context: Dict, intent_context: Dict) -> Dict[str, Any]:
         """执行目标导向的工作流。"""
         project_id = context.get("project_id")
+        
+        # 0. 预检查：判断用户请求是否超出系统能力
+        unsupported_keywords = [
+            "动物实验", "临床实验", "体外验证", "细胞实验", "动物模型", "体内实验",
+            "动物试验", "临床试验", "毒理实验", "药代实验", "生物实验", "湿实验",
+            "动物", "clinical trial", "in vivo", "animal model", "cell assay",
+            "毒理学", "药代动力学", "生物等效性", "生物利用度实验",
+        ]
+        msg_lower = user_message.lower()
+        if any(kw in msg_lower for kw in unsupported_keywords):
+            return {
+                "success": True,
+                "type": "unsupported",
+                "final_answer": (
+                    "抱歉，目前系统暂时无法直接完成**湿实验验证**（如动物实验、细胞实验、临床实验等）。
+
+"
+                    "本平台专注于**计算层面的药物设计**，包括：
+"
+                    "  • 分子生成与筛选
+"
+                    "  • ADMET 性质预测
+"
+                    "  • 分子对接打分
+"
+                    "  • 逆合成分析
+"
+                    "  • 活性预测与 QSAR 建模
+
+"
+                    "**建议路径**：
+"
+                    "  1. 先通过本平台筛选出 Top 候选分子
+"
+                    "  2. 联系 CRO 公司进行体外/体内验证
+
+"
+                    "如果您需要其他计算层面的帮助，请告诉我！"
+                ),
+                "action_cards": [],
+                "steps": [],
+                "autonomous": False,
+            }
 
         # 1. Perceive
         try:
