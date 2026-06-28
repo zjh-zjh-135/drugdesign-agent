@@ -10,10 +10,26 @@ from .utils import validate_smiles, _get_allchem, compute_morgan_similarity
 from .structure import smiles_to_sdf
 
 # Vina可执行文件路径（可配置）
-VINA_EXE = os.environ.get('VINA_EXE', os.path.join(
+# P1修复: 路径验证，只允许白名单目录，防止任意命令执行
+VINA_EXE_RAW = os.environ.get('VINA_EXE', os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     'tools', 'vina.exe'
 ))
+
+_ALLOWED_VINA_DIRS = {
+    os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'tools'),
+    '/usr/local/bin',
+    '/usr/bin',
+    '/opt',
+}
+
+VINA_EXE = VINA_EXE_RAW
+if VINA_EXE_RAW:
+    vina_dir = os.path.dirname(os.path.abspath(VINA_EXE_RAW))
+    if not any(vina_dir.startswith(allowed) for allowed in _ALLOWED_VINA_DIRS):
+        import logging
+        logging.getLogger('docking').error(f'VINA_EXE path rejected for security: {VINA_EXE_RAW}')
+        VINA_EXE = ''  # 拒绝非法路径
 
 
 class DockingScreen:
