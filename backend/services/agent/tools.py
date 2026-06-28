@@ -925,7 +925,8 @@ def _build_wait_result(db, pipeline_run, project_id, elapsed, completed):
     "run_full_pipeline",
     "端到端运行药物发现全流程：从靶点名称到候选分子。自动获取PDB ID、创建项目、添加已知活性分子、运行Pipeline、等待完成并返回Top候选分子。适合一键式完成从靶点到候选分子的完整流程。",
     {
-        "target_name": {"type": "string", "description": "靶点名称（如HER2、EGFR、VEGFR2、AKT1、BRAF等）", "required": True},
+        "project_id": {"type": "integer", "description": "项目ID（必须先创建项目）", "required": True},
+        "target_name": {"type": "string", "description": "靶点名称（如HER2、EGFR、AKT1等），用于获取PDB ID和活性分子", "required": True},
         "num_molecules": {"type": "integer", "description": "生成分子数量，默认1000", "required": False, "default": 1000},
         "similarity_threshold": {"type": "number", "description": "相似度阈值（0.0-1.0），默认0.3", "required": False, "default": 0.3},
         "admet_threshold": {"type": "number", "description": "ADMET综合阈值（0-100），默认60", "required": False, "default": 60},
@@ -933,43 +934,70 @@ def _build_wait_result(db, pipeline_run, project_id, elapsed, completed):
         "limit": {"type": "integer", "description": "返回Top候选分子数量，默认3", "required": False, "default": 3}
     }
 )
-def run_full_pipeline(target_name: str, num_molecules: int = 1000, 
+def run_full_pipeline(project_id: int, target_name: str, num_molecules: int = 1000,
                        similarity_threshold: float = 0.3, admet_threshold: float = 60,
                        availability_threshold: float = 0.35, limit: int = 3) -> Dict:
     """
-    端到端全流程：靶点名称 -> 获取PDB ID -> 创建项目（自动添加活性分子） -> 运行Pipeline -> 等待完成 -> 获取Top分子
+    端到端全流程：基于已有项目运行Pipeline。必须先创建项目，然后指定项目ID运行。
+    步骤：验证项目 -> 获取/更新PDB ID -> 添加活性分子 -> 运行Pipeline -> 等待完成 -> 获取Top候选分子
     """
     from ...services.target_database import get_pdb_id_for_target, get_active_molecules_for_target
+    from ...models.database import get_db_session, Project, ActiveMolecule
     
-    print(f"[run_full_pipeline] 开始全流程：target={target_name}, num={num_molecules}, limit={limit}")
+    print(f"[run_full_pipeline] 开始全流程：project_id={project_id}, target={target_name}, num={num_molecules}, limit={limit}")
     
-    # 1. 获取 PDB ID
-    pdb_id = get_pdb_id_for_target(target_name)
-    if not pdb_id:
-        pdb_id = target_name
-        print(f"[run_full_pipeline] 未在数据库中找到 {target_name} 的 PDB ID，使用名称本身")
-    else:
-        print(f"[run_full_pipeline] 靶点 {target_name} 对应 PDB ID: {pdb_id}")
-    
-    # 2. 创建项目（自动添加已知活性分子）
-    project_result = create_project(
-        name=f"{target_name}_auto_{datetime.now().strftime('%m%d%H%M')}",
-        target_name=target_name,
-        target_pdb=pdb_id,
-        description=f"自动全流程项目 - 靶点: {target_name}",
-        design_goal="hit_finding"
-    )
-    
-    if not project_result.get("success"):
+    # 1. 验证项目存在
+    try:
+        db = get_db_session()
+        project = db.query(Project).filter(Project.id == project_id).first()
+        if not project:
+            return {
+                "success": False,
+                "stage": "project_validation",
+                "error": f"项目ID {project_id} 不存在，请先创建项目。",
+                "hint": "请先用'创建项目'功能创建项目，然后运行全流程。"
+            }
+        # 如果项目没有靶点信息，更新它
+        if not project.target_name or project.target_name == target_name:
+            pdb_id = get_pdb_id_for_target(target_name)
+            if not pdb_id:
+                pdb_id = target_name
+            project.target_name = target_name
+            project.target_pdb = pdb_id
+            db.commit()
+            print(f"[run_full_pipeline] 已更新项目 {project_id} 的靶点信息: {target_name} / {pdb_id}")
+        
+        # 添加活性分子（如果不存在）
+        active_mols = get_active_molecules_for_target(target_name)
+        existing_count = db.query(ActiveMolecule).filter(
+            ActiveMolecule.project_id == project_id
+        ).count()
+        if existing_count == 0 and active_mols:
+            for mol in active_mols:
+                am = ActiveMolecule(
+                    project_id=project_id,
+                    smiles=mol.get("smiles", ""),
+                    activity_value=mol.get("activity", 0),
+                    activity_type=mol.get("activity_type", "IC50"),
+                    source="auto",
+                    reference=mol.get("reference", "")
+                )
+                db.add(am)
+            db.commit()
+            print(f"[run_full_pipeline] 已添加 {len(active_mols)} 个活性分子到项目 {project_id}")
+        active_count = db.query(ActiveMolecule).filter(
+            ActiveMolecule.project_id == project_id
+        ).count()
+        db.close()
+    except Exception as e:
         return {
             "success": False,
-            "stage": "project_creation",
-            "error": project_result.get("error", "项目创建失败")
+            "stage": "project_validation",
+            "error": f"验证项目失败: {str(e)}"
         }
     
-    project_id = project_result["project_id"]
-    active_count = project_result.get("active_molecules_added", 0)
-    print(f"[run_full_pipeline] 项目创建成功: ID={project_id}, 活性分子={active_count}个")
+    pdb_id = project.target_pdb or target_name
+    print(f"[run_full_pipeline] 项目验证通过: ID={project_id}, 活性分子={active_count}个")
     
     # 3. 运行 Pipeline（后台线程运行，非阻塞）
     pipeline_result = run_pipeline(

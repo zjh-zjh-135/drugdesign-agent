@@ -11,13 +11,13 @@ class MoleculeFilter:
     """分子过滤引擎"""
     
     DEFAULT_THRESHOLDS = {
-        'mw_min': 250, 'mw_max': 550,        # 与数据库默认值对齐
-        'clogp_min': 0, 'clogp_max': 5,      # 与数据库默认值对齐
-        'tpsa_min': 40, 'tpsa_max': 120,     # 与数据库默认值对齐
-        'hbd_max': 5,                         # 与数据库默认值对齐
-        'hba_max': 10,                        # 与数据库默认值对齐
-        'rotb_max': 10,                       # 与数据库默认值对齐
-        'sa_score_max': 4.5,                 # 与数据库默认值对齐
+        'mw_min': 200, 'mw_max': 600,        # 放宽: 最小200, 最大600
+        'clogp_min': -1, 'clogp_max': 6,     # 放宽: 最小-1(极性), 最大6
+        'tpsa_min': 20, 'tpsa_max': 140,     # 放宽: 最小20(小分子可20+), 最大140
+        'hbd_max': 6,                         # 放宽: 6个氢键供体
+        'hba_max': 12,                        # 放宽: 12个氢键受体
+        'rotb_max': 12,                       # 放宽: 12个可旋转键
+        'sa_score_max': 5.5,                 # 放宽: 合成难度容忍到5.5
     }
     
     def __init__(self, thresholds: Dict = None):

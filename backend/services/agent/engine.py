@@ -368,6 +368,28 @@ class ReActEngine:
                 "autonomous": False,
             }
 
+        # 0.5 预检查：跑全流程必须指定项目
+        pipeline_keywords = ["全流程", "pipeline", "full pipeline", "完整流程"]
+        if any(kw in msg_lower for kw in pipeline_keywords):
+            if not project_id or str(project_id) in ("None", "", "0"):
+                return {
+                    "success": True,
+                    "type": "clarification",
+                    "final_answer": (
+                        "要运行药物发现全流程，请先**创建一个项目**。\n\n"
+                        "您可以这样说：\n"
+                        "  • "创建一个关于AKT1的项目"\n"
+                        "  • "创建项目，靶点EGFR"\n\n"
+                        "创建完成后，再告诉我：\n"
+                        "  • "运行AKT1项目的全流程"\n"
+                        "  • "帮我跑项目ID=58的全流程"\n\n"
+                        "这样我才能为您运行Pipeline并生成候选分子。"
+                    ),
+                    "action_cards": [],
+                    "steps": [],
+                    "autonomous": False,
+                }
+
         # 1. Perceive
         try:
             from .perception import EnvironmentPerception
