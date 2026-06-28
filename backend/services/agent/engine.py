@@ -19,7 +19,7 @@ from typing import Dict, Any, List, Optional
 from dataclasses import dataclass, field
 from datetime import datetime
 
-import requests
+import threading
 
 KIMI_API_KEY = os.environ.get("KIMI_API_KEY", "")
 KIMI_API_URL = "https://api.moonshot.cn/v1/chat/completions"
@@ -253,6 +253,27 @@ class ReActEngine:
                 "autonomous": False,
             }
         
+        # P0修复: 整体超时控制（120秒）
+        import concurrent.futures
+        import uuid
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(self._run_core, user_message, context)
+            try:
+                return future.result(timeout=120)
+            except concurrent.futures.TimeoutError:
+                return {
+                    "success": False,
+                    "type": "timeout",
+                    "final_answer": "处理超时（超过120秒），请稍后重试或简化请求。",
+                    "chat_summary": "处理超时",
+                    "action_cards": [],
+                    "steps": [],
+                    "autonomous": False,
+                    "trace_id": str(uuid.uuid4())[:8],
+                }
+    
+    def _run_core(self, user_message: str, context: Dict = None) -> Dict[str, Any]:
+        """run()的核心逻辑，用于超时包装。"""
         import uuid
         trace_id = str(uuid.uuid4())[:8]
         
@@ -486,12 +507,14 @@ class ReActEngine:
                 break
         
         if can_parallel and len(sub_intents) > 1:
-            # 并行执行
+            # 并行执行：为每个子意图创建独立的context副本，避免共享状态
             with concurrent.futures.ThreadPoolExecutor(max_workers=len(sub_intents)) as executor:
                 futures = []
                 for sub_intent in sub_intents:
                     intent_context = parser.build_planning_context(sub_intent)
-                    future = executor.submit(self._execute_goal_oriented, sub_intent.original_message, context, intent_context)
+                    # 创建独立的context副本，避免多线程共享同一字典
+                    sub_context = context.copy()
+                    future = executor.submit(self._execute_goal_oriented, sub_intent.original_message, sub_context, intent_context)
                     futures.append(future)
                 
                 for future in concurrent.futures.as_completed(futures, timeout=60):
@@ -1001,6 +1024,7 @@ class CopilotAgent:
         # 实例级上下文记忆：当 db/session 不可用时提供回退
         self._last_project_id: Optional[int] = None
         self._last_target: Optional[str] = None
+        self._memory_lock = threading.Lock()
 
     def _register_default_tools(self):
         """注册默认工具（占位，实际工具在 tools.py 中定义）"""
@@ -1019,19 +1043,23 @@ class CopilotAgent:
             from .memory import get_session_project_id
             effective_project_id = get_session_project_id(db_conn, session_id)
         if not effective_project_id:
-            # 回退到实例级记忆
-            effective_project_id = self._last_project_id
+            # 回退到实例级记忆（线程安全）
+            with self._memory_lock:
+                effective_project_id = self._last_project_id
         
         # 2. 从消息中提取靶点（如果有）
         detected_target = _extract_target_from_message(message)
         if detected_target:
-            self._last_target = detected_target
+            with self._memory_lock:
+                self._last_target = detected_target
         
-        # 构建上下文，包含实例级记忆
+        # 构建上下文，包含实例级记忆（线程安全读取）
+        with self._memory_lock:
+            last_target = self._last_target
         context = {
             "project_id": effective_project_id,
             "session_id": session_id,
-            "last_target": self._last_target,
+            "last_target": last_target,
         }
 
         # 3. 保存用户消息到记忆（使用 effective_project_id）
@@ -1044,15 +1072,16 @@ class CopilotAgent:
         # 4. 运行增强版 ReAct 引擎
         result = self.engine.run(message, context)
 
-        # 5. 从结果中更新实例级记忆
+        # 5. 从结果中更新实例级记忆（线程安全）
         if result.get("success"):
             report = result.get("execution_report", {})
             # 如果执行中创建了项目，更新 last_project_id
-            if report and report.get("project_id"):
-                self._last_project_id = report.get("project_id")
-            # 如果 context 中有 project_id，也更新
-            if effective_project_id:
-                self._last_project_id = effective_project_id
+            with self._memory_lock:
+                if report and report.get("project_id"):
+                    self._last_project_id = report.get("project_id")
+                # 如果 context 中有 project_id，也更新
+                if effective_project_id:
+                    self._last_project_id = effective_project_id
         
         # 6. 保存助手回复到记忆（使用 chat_summary 避免重复显示）
         if db_conn and session_id:

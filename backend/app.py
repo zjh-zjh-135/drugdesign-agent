@@ -1,6 +1,6 @@
-from flask import Flask, send_from_directory
-from flask_cors import CORS
+from flask import Flask, send_from_directory, jsonify, request
 import os
+import secrets
 
 from .config import STATIC_DIR, MOLECULE_IMG_DIR
 from .models.database import init_db
@@ -40,6 +40,30 @@ def create_app():
     
     # 设置安全中间件（请求来源检查、请求体大小限制、安全响应头）
     setup_security_middleware(app)
+    
+    # P0修复: 添加API Key认证（商用级别安全）
+    # 设置环境变量 API_KEY=your-secret-key 启用认证
+    # 开发环境不设置则允许所有请求
+    API_KEY = os.environ.get('API_KEY', None)
+    PUBLIC_ENDPOINTS = {'system.health_check', 'system.get_status'}  # 公开端点白名单
+    
+    @app.before_request
+    def require_auth():
+        if not API_KEY:
+            return None  # 开发模式：未设置API_KEY则跳过认证
+        if request.method == 'OPTIONS':
+            return None
+        if request.endpoint in PUBLIC_ENDPOINTS:
+            return None
+        # 检查 /api/* 路由
+        if not request.path.startswith('/api/'):
+            return None
+        # 验证Header
+        auth_header = request.headers.get('Authorization', '')
+        api_key = request.headers.get('X-API-Key', '')
+        token = auth_header.replace('Bearer ', '').strip() if auth_header.startswith('Bearer ') else api_key
+        if not token or not secrets.compare_digest(token, API_KEY):
+            return jsonify({'success': False, 'error': '认证失败，请提供有效的 API Key'}), 401
     
     # 初始化数据库
     init_db()

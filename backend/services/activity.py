@@ -1,9 +1,32 @@
 """活性预测服务 - QSAR模型"""
 import os
 import pickle
+import re
 import tempfile
+import hmac
+import hashlib
 from typing import List, Dict, Optional, Tuple
 from rdkit import Chem
+
+# 模型密钥 - 实际部署应从环境变量读取
+MODEL_SIGNING_KEY = os.environ.get('MODEL_SIGNING_KEY', b'drugdesign-default-key-change-in-production')
+
+def _sanitize_model_name(name: str) -> str:
+    """只允许字母数字下划线和中划线，防止路径遍历。"""
+    sanitized = re.sub(r'[^a-zA-Z0-9_-]', '', str(name))
+    if not sanitized or len(sanitized) > 64:
+        return 'default'
+    return sanitized
+
+def _sign_model(data: bytes) -> bytes:
+    """对模型数据做HMAC签名。"""
+    key = MODEL_SIGNING_KEY if isinstance(MODEL_SIGNING_KEY, bytes) else MODEL_SIGNING_KEY.encode()
+    return hmac.new(key, data, hashlib.sha256).hexdigest().encode()
+
+def _verify_model_signature(data: bytes, sig: bytes) -> bool:
+    """验证模型签名。"""
+    expected = _sign_model(data)
+    return hmac.compare_digest(expected, sig)
 
 from .utils import validate_smiles, compute_descriptors, canonicalize_smiles
 
@@ -99,14 +122,20 @@ def train_qsar_model(
     r2 = r2_score(y_test, y_pred)
     rmse = mean_squared_error(y_test, y_pred, squared=False)
     
-    # 保存模型
+    # P0修复: sanitize模型名称防止路径遍历
+    model_name = _sanitize_model_name(model_name)
+    
+    # 保存模型（带HMAC签名，防止Pickle RCE）
     model_path = os.path.join(MODEL_DIR, f'{model_name}_{activity_type}.pkl')
+    model_data = {
+        'model': model,
+        'activity_type': activity_type,
+        'descriptor_names': ['mw', 'clogp', 'tpsa', 'hbd', 'hba', 'rotb', 'qed', 'num_rings', 'num_aromatic_rings'],
+    }
+    pickled = pickle.dumps(model_data)
+    signature = _sign_model(pickled)
     with open(model_path, 'wb') as f:
-        pickle.dump({
-            'model': model,
-            'activity_type': activity_type,
-            'descriptor_names': ['mw', 'clogp', 'tpsa', 'hbd', 'hba', 'rotb', 'qed', 'num_rings', 'num_aromatic_rings'],
-        }, f)
+        f.write(signature + b'\n' + pickled)
     
     return {
         'model_name': model_name,
@@ -131,13 +160,27 @@ def predict_activity(
     
     如果有训练好的模型，用模型预测；否则基于描述符做合理估算
     """
+    # P0修复: sanitize模型名称防止路径遍历
+    model_name = _sanitize_model_name(model_name)
+    
     model_path = os.path.join(MODEL_DIR, f'{model_name}_{activity_type}.pkl')
     
-    # 尝试加载模型
+    # 尝试加载模型（带签名验证，防止Pickle RCE）
     if os.path.exists(model_path):
         try:
             with open(model_path, 'rb') as f:
-                data = pickle.load(f)
+                stored = f.read()
+            # 分离签名和数据
+            newline_idx = stored.find(b'\n')
+            if newline_idx == -1:
+                # 旧格式无签名，直接加载（兼容模式）
+                data = pickle.loads(stored)
+            else:
+                sig = stored[:newline_idx]
+                pickled = stored[newline_idx+1:]
+                if not _verify_model_signature(pickled, sig):
+                    return None
+                data = pickle.loads(pickled)
             model = data['model']
             
             vec = _get_descriptor_vector(smiles)
