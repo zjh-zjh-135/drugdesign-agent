@@ -310,7 +310,7 @@ class UnsupportedRequestFormatter:
     def format_unsupported(request: str, available_tools: List[str]) -> str:
         """格式化无法完成的请求回复"""
         return (
-            f"抱歉，我暂时无法直接完成"{request}"。\n\n"
+            f"抱歉，我暂时无法直接完成'{request}'。\n\n"
             f"当前系统支持以下类型的任务：\n"
             f"  - 分子生成与筛选（Pipeline）\n"
             f"  - ADMET 性质预测\n"
