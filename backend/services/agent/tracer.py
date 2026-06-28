@@ -166,7 +166,26 @@ class TraceStore:
     
     @classmethod
     def save(cls, trace: AgentTrace):
-        """保存追踪记录到内存和文件"""
+        """保存追踪记录到内存和文件（P1修复: 敏感字段脱敏）"""
+        trace_dict = trace.to_dict()
+        
+        # 脱敏敏感字段
+        def _sanitize_value(obj):
+            if isinstance(obj, str):
+                # 脱敏API Key、密码等
+                for pattern in [r'[Ss][Kk]-[A-Za-z0-9]{20,}', r'[Aa][Pp][Ii][-_]?[Kk][Ee][Yy].{0,20}=[A-Za-z0-9]{10,}',
+                               r'[Bb][Ee][Aa][Rr][Ee][Rr]\s+[A-Za-z0-9_-]{10,}',
+                               r'[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd].{0,20}[=:][A-Za-z0-9!@#$%^&*]{4,}']:
+                    obj = re.sub(pattern, '[REDACTED]', obj)
+                return obj
+            elif isinstance(obj, dict):
+                return {k: _sanitize_value(v) for k, v in obj.items()}
+            elif isinstance(obj, list):
+                return [_sanitize_value(item) for item in obj]
+            return obj
+        
+        trace_dict = _sanitize_value(trace_dict)
+        
         # 内存缓存
         cls._memory_traces.append(trace)
         if len(cls._memory_traces) > cls._max_memory_size:
@@ -176,7 +195,7 @@ class TraceStore:
         if cls._trace_file:
             try:
                 with open(cls._trace_file, "a", encoding="utf-8") as f:
-                    f.write(json.dumps(trace.to_dict(), ensure_ascii=False) + "\n")
+                    f.write(json.dumps(trace_dict, ensure_ascii=False) + "\n")
             except Exception as e:
                 logger.warning(f"Failed to write trace to file: {e}")
     
