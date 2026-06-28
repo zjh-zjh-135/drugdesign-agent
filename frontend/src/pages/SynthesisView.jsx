@@ -292,9 +292,11 @@ function MoleculeNode({ data, kind, label }) {
         {/* 2D 结构图 */}
         <div className="bg-white rounded-lg border border-slate-100 overflow-hidden h-[200px] flex items-center justify-center">
           {data?.svg ? (
-            <div
-              className="w-full h-full"
-              dangerouslySetInnerHTML={{ __html: data.svg }}
+            // P1修复: 使用img+base64替代dangerouslySetInnerHTML，防止XSS
+            <img
+              src={`data:image/svg+xml;base64,${btoa(unescape(encodeURIComponent(data.svg)))}`}
+              alt="2D Structure"
+              className="w-full h-full object-contain"
             />
           ) : (
             <span className="text-xs text-slate-300 font-mono px-2 text-center break-all">
