@@ -11,17 +11,23 @@ class MoleculeFilter:
     """分子过滤引擎"""
     
     DEFAULT_THRESHOLDS = {
-        'mw_min': 200, 'mw_max': 500,        # 收紧：排除过小和过大分子
-        'clogp_min': 0.5, 'clogp_max': 4.5,  # 收紧：更严格的药物样性范围
-        'tpsa_min': 40, 'tpsa_max': 120,      # 收紧：中等极性范围
-        'hbd_max': 4,                         # 收紧：减少氢键供体
-        'hba_max': 10,                        # 收紧：减少氢键受体
-        'rotb_max': 8,                        # 收紧：减少柔性
-        'sa_score_max': 4.5,                 # 收紧：合成难度要求更高
+        'mw_min': 250, 'mw_max': 550,        # 与数据库默认值对齐
+        'clogp_min': 0, 'clogp_max': 5,      # 与数据库默认值对齐
+        'tpsa_min': 40, 'tpsa_max': 120,     # 与数据库默认值对齐
+        'hbd_max': 5,                         # 与数据库默认值对齐
+        'hba_max': 10,                        # 与数据库默认值对齐
+        'rotb_max': 10,                       # 与数据库默认值对齐
+        'sa_score_max': 4.5,                 # 与数据库默认值对齐
     }
     
     def __init__(self, thresholds: Dict = None):
-        self.thresholds = thresholds or self.DEFAULT_THRESHOLDS.copy()
+        if thresholds is None:
+            self.thresholds = self.DEFAULT_THRESHOLDS.copy()
+        else:
+            # 合并：传入的参数覆盖默认，缺失的补全
+            # 这样空字典 {} 也会使用 DEFAULT_THRESHOLDS（不会回退）
+            self.thresholds = {**self.DEFAULT_THRESHOLDS, **thresholds}
+
     
     def filter_single(self, smiles: str) -> Tuple[bool, Dict, str]:
         """
