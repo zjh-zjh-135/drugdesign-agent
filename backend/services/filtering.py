@@ -24,9 +24,22 @@ class MoleculeFilter:
         if thresholds is None:
             self.thresholds = self.DEFAULT_THRESHOLDS.copy()
         else:
-            # 合并：传入的参数覆盖默认，缺失的补全
-            # 这样空字典 {} 也会使用 DEFAULT_THRESHOLDS（不会回退）
-            self.thresholds = {**self.DEFAULT_THRESHOLDS, **thresholds}
+            # 智能合并：传入的参数不能覆盖默认值为更严格的值
+            # 这样可以防止旧项目存储的严格阈值覆盖新放宽的默认值
+            merged = self.DEFAULT_THRESHOLDS.copy()
+            for key, value in thresholds.items():
+                if key in merged and value is not None:
+                    if 'min' in key:
+                        # min 值取更小（更宽松）
+                        merged[key] = min(merged[key], value)
+                    elif 'max' in key:
+                        # max 值取更大（更宽松）
+                        merged[key] = max(merged[key], value)
+                    else:
+                        merged[key] = value
+                elif value is not None:
+                    merged[key] = value
+            self.thresholds = merged
 
     
     def filter_single(self, smiles: str) -> Tuple[bool, Dict, str]:

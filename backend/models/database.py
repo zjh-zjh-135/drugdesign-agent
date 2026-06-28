@@ -19,11 +19,11 @@ class Project(Base):
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
     filter_params = Column(JSON, default=lambda: {
-        'mw_min': 250, 'mw_max': 550,
-        'clogp_min': 0, 'clogp_max': 5,
-        'tpsa_min': 40, 'tpsa_max': 120,
-        'hbd_max': 5, 'hba_max': 10,
-        'rotb_max': 10, 'sa_score_max': 4.5,
+        'mw_min': 200, 'mw_max': 600,
+        'clogp_min': -1, 'clogp_max': 6,
+        'tpsa_min': 20, 'tpsa_max': 140,
+        'hbd_max': 6, 'hba_max': 12,
+        'rotb_max': 12, 'sa_score_max': 5.5,
     })
     
     active_molecules = relationship("ActiveMolecule", back_populates="project", cascade="all, delete-orphan")
