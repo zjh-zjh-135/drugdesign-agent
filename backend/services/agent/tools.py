@@ -154,12 +154,13 @@ def list_projects() -> List[Dict]:
         "num_molecules": {"type": "integer", "description": "生成数量", "required": False, "default": 500},
         "generation_strategy": {"type": "string", "description": "策略: crem/rnn/scaffold", "required": False, "default": "crem"},
         "similarity_threshold": {"type": "float", "description": "相似度阈值", "required": False, "default": 0.3},
-        "admet_threshold": {"type": "float", "description": "ADMET阈值", "required": False, "default": 60}
+        "admet_threshold": {"type": "float", "description": "ADMET阈值", "required": False, "default": 60},
+        "availability_threshold": {"type": "float", "description": "合成可及性阈值", "required": False, "default": 0.35}
     }
 )
 def run_pipeline(project_id: int, num_molecules: int = 500,
                  generation_strategy: str = "crem", similarity_threshold: float = 0.3,
-                 admet_threshold: float = 60) -> Dict:
+                 admet_threshold: float = 60, availability_threshold: float = 0.35) -> Dict:
     """运行 Pipeline"""
     db = _get_db()
     try:
@@ -177,7 +178,7 @@ def run_pipeline(project_id: int, num_molecules: int = 500,
             "similarity_threshold": similarity_threshold,
             "admet_threshold": admet_threshold,
             "top_n": min(num_molecules // 5, 200),
-            "availability_threshold": 0.5,
+            "availability_threshold": availability_threshold,
             "filter_params": filter_params,
             "enable_failed_iteration": True
         }
@@ -928,12 +929,13 @@ def _build_wait_result(db, pipeline_run, project_id, elapsed, completed):
         "num_molecules": {"type": "integer", "description": "生成分子数量，默认50", "required": False, "default": 50},
         "similarity_threshold": {"type": "number", "description": "相似度阈值（0.0-1.0），默认0.3", "required": False, "default": 0.3},
         "admet_threshold": {"type": "number", "description": "ADMET综合阈值（0-100），默认60", "required": False, "default": 60},
+        "availability_threshold": {"type": "number", "description": "合成可及性阈值（0.0-1.0），默认0.35", "required": False, "default": 0.35},
         "limit": {"type": "integer", "description": "返回Top候选分子数量，默认3", "required": False, "default": 3}
     }
 )
 def run_full_pipeline(target_name: str, num_molecules: int = 50, 
                        similarity_threshold: float = 0.3, admet_threshold: float = 60,
-                       limit: int = 3) -> Dict:
+                       availability_threshold: float = 0.35, limit: int = 3) -> Dict:
     """
     端到端全流程：靶点名称 -> 获取PDB ID -> 创建项目（自动添加活性分子） -> 运行Pipeline -> 等待完成 -> 获取Top分子
     """
@@ -975,7 +977,8 @@ def run_full_pipeline(target_name: str, num_molecules: int = 50,
         num_molecules=num_molecules,
         generation_strategy="crem",
         similarity_threshold=similarity_threshold,
-        admet_threshold=admet_threshold
+        admet_threshold=admet_threshold,
+        availability_threshold=availability_threshold
     )
     
     if not pipeline_result.get("success"):

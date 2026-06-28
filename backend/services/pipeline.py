@@ -529,7 +529,7 @@ class PipelineRunner:
                 try:
                     result = analyzer.analyze(mol.smiles)
                     self._save_synthesis(mol.id, result)
-                    availability_threshold = self.params.get('availability_threshold', 0.5)
+                    availability_threshold = self.params.get('availability_threshold', 0.35)
                     if result.get('availability_score', 0) >= availability_threshold:
                         mol.pipeline_status = 'synthesis_passed'
                         passed_count += 1
