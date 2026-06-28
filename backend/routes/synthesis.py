@@ -102,6 +102,9 @@ def analyze_synthesis(molecule_id):
         import traceback
         traceback.print_exc()
         return jsonify({'success': False, 'error': f'合成分析失败: {str(e)}'}), 500
+    except Exception as e:
+        db.rollback()
+        return jsonify({'success': False, 'error': f'数据库操作失败: {str(e)}'}), 500
     finally:
         db.close()
 

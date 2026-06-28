@@ -71,6 +71,9 @@ def create_assay_result(project_id):
             'success': True,
             'data': {'id': result.id}
         })
+    except Exception as e:
+        db.rollback()
+        return jsonify({'success': False, 'error': f'数据库操作失败: {str(e)}'}), 500
     finally:
         db.close()
 
@@ -99,6 +102,9 @@ def update_assay_result(assay_id):
         
         db.commit()
         return jsonify({'success': True})
+    except Exception as e:
+        db.rollback()
+        return jsonify({'success': False, 'error': f'数据库操作失败: {str(e)}'}), 500
     finally:
         db.close()
 
@@ -139,6 +145,9 @@ def apply_feedback(assay_id):
                 'message': '数据已回流，下一轮Pipeline将使用此实验数据'
             }
         })
+    except Exception as e:
+        db.rollback()
+        return jsonify({'success': False, 'error': f'数据库操作失败: {str(e)}'}), 500
     finally:
         db.close()
 

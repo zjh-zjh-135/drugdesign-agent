@@ -61,6 +61,9 @@ def create_project():
         db.refresh(project)
         
         return jsonify({'success': True, 'data': {'id': project.id, 'name': project.name}})
+    except Exception as e:
+        db.rollback()
+        return jsonify({'success': False, 'error': f'数据库操作失败: {str(e)}'}), 500
     finally:
         db.close()
 
@@ -129,6 +132,9 @@ def batch_add_active_molecules(project_id):
         
         db.commit()
         return jsonify({'success': True, 'data': {'added': added, 'skipped': skipped}})
+    except Exception as e:
+        db.rollback()
+        return jsonify({'success': False, 'error': f'数据库操作失败: {str(e)}'}), 500
     finally:
         db.close()
 
@@ -222,6 +228,9 @@ def update_project(project_id):
         
         db.commit()
         return jsonify({'success': True})
+    except Exception as e:
+        db.rollback()
+        return jsonify({'success': False, 'error': f'数据库操作失败: {str(e)}'}), 500
     finally:
         db.close()
 
@@ -236,6 +245,9 @@ def delete_project(project_id):
         db.delete(p)
         db.commit()
         return jsonify({'success': True})
+    except Exception as e:
+        db.rollback()
+        return jsonify({'success': False, 'error': f'数据库操作失败: {str(e)}'}), 500
     finally:
         db.close()
 
@@ -285,6 +297,9 @@ def upload_active_molecules(project_id):
         
         db.commit()
         return jsonify({'success': True, 'data': {'added': added, 'skipped': skipped}})
+    except Exception as e:
+        db.rollback()
+        return jsonify({'success': False, 'error': f'数据库操作失败: {str(e)}'}), 500
     finally:
         db.close()
 

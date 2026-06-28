@@ -87,6 +87,9 @@ def apply_filter():
         
         db.commit()
         return jsonify({'success': True, 'data': results})
+    except Exception as e:
+        db.rollback()
+        return jsonify({'success': False, 'error': f'数据库操作失败: {str(e)}'}), 500
     finally:
         db.close()
 

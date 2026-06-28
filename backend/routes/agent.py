@@ -342,6 +342,9 @@ def delete_session(session_id):
         return jsonify({'success': False, 'error': '会话不存在'}), 404
     except Exception as e:
         return jsonify({'success': False, 'error': '删除失败'}), 500
+    except Exception as e:
+        db.rollback()
+        return jsonify({'success': False, 'error': f'数据库操作失败: {str(e)}'}), 500
     finally:
         db.close()
 

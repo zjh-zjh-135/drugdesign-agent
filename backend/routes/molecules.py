@@ -165,6 +165,9 @@ def create_molecule():
         db.commit()
         db.refresh(mol)
         return jsonify({'success': True, 'data': {'id': mol.id}})
+    except Exception as e:
+        db.rollback()
+        return jsonify({'success': False, 'error': f'数据库操作失败: {str(e)}'}), 500
     finally:
         db.close()
 
@@ -193,6 +196,9 @@ def batch_upload_molecules():
                 added += 1
         db.commit()
         return jsonify({'success': True, 'data': {'added': added}})
+    except Exception as e:
+        db.rollback()
+        return jsonify({'success': False, 'error': f'数据库操作失败: {str(e)}'}), 500
     finally:
         db.close()
 
@@ -207,5 +213,8 @@ def delete_molecule(molecule_id):
         db.delete(mol)
         db.commit()
         return jsonify({'success': True})
+    except Exception as e:
+        db.rollback()
+        return jsonify({'success': False, 'error': f'数据库操作失败: {str(e)}'}), 500
     finally:
         db.close()
