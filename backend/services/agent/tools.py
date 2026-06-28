@@ -1042,9 +1042,9 @@ def run_full_pipeline(target_name: str, num_molecules: int = 1000,
         final_result["message"] = f"Pipeline运行失败。已生成{wait_result.get('num_generated', 0)}个分子，但筛选未通过。"
     elif status == "timeout":
         final_result["message"] = (
-            f"Pipeline已启动（生成{wait_result.get('num_generated', 0)}个分子），"
-            f"但仍在运行中（已等待{wait_result.get('elapsed_seconds', 0)}秒）。"
-            f"请稍后通过"项目状态"查看结果，或再次询问"AKT1的候选分子结果"。"
+            f'Pipeline已启动（生成{wait_result.get("num_generated", 0)}个分子），'
+            f'但仍在运行中（已等待{wait_result.get("elapsed_seconds", 0)}秒）。'
+            f'请稍后通过"项目状态"查看结果，或再次询问"AKT1的候选分子结果"。'
         )
         final_result["pipeline_running"] = True
     else:
