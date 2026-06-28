@@ -236,6 +236,18 @@ class IntentParser:
     # Stage 1: Quick Detection
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _safe_project_id(project_id) -> Optional[str]:
+        """安全地获取有效的 project_id 字符串。"""
+        if project_id is None or project_id == "":
+            return None
+        if isinstance(project_id, str) and project_id.strip().lower() in ("none", "null", "undefined"):
+            return None
+        pid_str = str(project_id).strip()
+        if not pid_str or not pid_str.isdigit():
+            return None
+        return pid_str
+
     def _quick_detect(self, message: str, context: Dict[str, Any]) -> Optional[ParsedIntent]:
         """
         快速检测：基于关键词和模式匹配，低成本识别常见意图。
@@ -249,20 +261,23 @@ class IntentParser:
             "失败分子", "失败原因", "分析失败", "为什么失败", "失败分析",
             "哪些分子失败了", "失败的分子", "为什么会失败",
         ]
+        safe_pid = self._safe_project_id(project_id)
         for p in failure_analysis_patterns:
             if p in msg_lower:
                 return ParsedIntent(
                     primary_type=IntentType.COMPLEX_ANALYSIS,
                     confidence=0.9,
                     original_message=message,
-                    entities=[ExtractedEntity(type="project_id", value=str(project_id), confidence=0.9)] if project_id else [],
+                    entities=[ExtractedEntity(type="project_id", value=safe_pid, confidence=0.9)] if safe_pid else [],
                     detected_actions=["analyze_failures", "get_project_status"],
                     suggested_tools=["analyze_failures", "get_project_status"],
                     estimated_complexity=3,
                 )
         
+        safe_pid = self._safe_project_id(project_id)
+        
         # P0: 上下文依赖检测（如果上下文有项目ID，用户说"再优化"、"分析结果"等）
-        if project_id:
+        if safe_pid:
             follow_up_patterns = [
                 "再优化", "继续优化", "再分析一下", "看看结果", "分析结果", "查看结果",
                 "继续", "下一步", "然后呢", "结果呢", "优化一下", "再生成", "重新运行",
@@ -275,7 +290,7 @@ class IntentParser:
                         primary_type=IntentType.FOLLOW_UP,
                         confidence=0.85,
                         original_message=message,
-                        entities=[ExtractedEntity(type="project_id", value=str(project_id), confidence=0.9)],
+                        entities=[ExtractedEntity(type="project_id", value=safe_pid, confidence=0.9)],
                         detected_actions=["get_project_status", "analyze_failures", "suggest_next_step"],
                         suggested_tools=["get_project_status", "analyze_failures", "suggest_next_step"],
                         estimated_complexity=2,
@@ -292,7 +307,7 @@ class IntentParser:
                         primary_type=IntentType.FOLLOW_UP,
                         confidence=0.9,
                         original_message=message,
-                        entities=[ExtractedEntity(type="project_id", value=str(project_id), confidence=0.9)],
+                        entities=[ExtractedEntity(type="project_id", value=safe_pid, confidence=0.9)],
                         detected_actions=["format_top_molecules"],
                         suggested_tools=["format_top_molecules"],
                         estimated_complexity=2,
@@ -788,23 +803,36 @@ class IntentParser:
     # ------------------------------------------------------------------
 
     def _is_valid_smiles_looking(self, text: str) -> bool:
-        """验证字符串是否看起来像有效的 SMILES（启发式检查）。"""
+        """验证字符串是否看起来像有效的 SMILES（启发式检查）。
+        
+        改进：避免将简单化学式（如CO2、H2O、CH4）误判为SMILES。
+        真正的SMILES通常包含分支、环闭合或立体化学等复杂结构。
+        """
         # 必须包含至少一个常见原子符号
         common_atoms = set("CNOPSFClBrIBSi")
         has_atoms = any(c in text for c in common_atoms)
         
-        # 必须包含一些 SMILES 特征字符（括号、等号、环数字、@ 等）
-        smiles_features = set("()[]=@#123456789")
-        has_features = any(c in text for c in smiles_features)
+        # 必须包含 SMILES 的"复杂"特征字符（括号、等号、@、#等）
+        # 仅包含数字不算（CO2、H2O 等化学式也会匹配数字）
+        complex_features = set("()[]=@#")
+        has_complex_features = any(c in text for c in complex_features)
+        
+        # 如果不能通过复杂特征匹配，要求长度足够长（>15）
+        # 因为长字符串即使没有括号也可能是合法的SMILES
+        length_ok = 5 < len(text) < 500
+        likely_smiles = has_complex_features or (length_ok and len(text) > 15)
         
         # 不能包含明显的非 SMILES 字符（如空格、中文标点等）
         invalid_chars = set(" \u3000\uff0c\u3002\uff01\uff1f\uff1b")
         no_invalid = not any(c in text for c in invalid_chars)
         
-        # 长度适中（太短不可能是 SMILES）
-        length_ok = 5 < len(text) < 500
+        # 黑名单：常见化学式缩写（这些不应该被误判为SMILES）
+        common_formulas = {"H2O", "CO2", "CH4", "NH3", "H2SO4", "HCl", "NaOH", "CaCO3", 
+                           "O2", "N2", "CO", "NO", "NO2", "SO2", "SO3", "H2", "H2O2"}
+        if text.upper() in {f.upper() for f in common_formulas}:
+            return False
         
-        return has_atoms and has_features and no_invalid and length_ok
+        return has_atoms and likely_smiles and no_invalid and length_ok
 
     def _call_llm(self, messages: List[Dict[str, str]], temperature: float = 0.7) -> str:
         """调用 LLM（委托给 LLMClient，带重试）。"""

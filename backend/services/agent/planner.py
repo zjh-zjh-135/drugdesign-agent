@@ -7,12 +7,15 @@ steps (tool, params, reason) as a JSON object.
 """
 
 import json
+import logging
 import os
 import re
 import time
 from typing import Dict, Any, List, Optional
 
 import requests
+
+logger = logging.getLogger(__name__)
 
 
 KIMI_API_KEY = os.environ.get("KIMI_API_KEY", "")
