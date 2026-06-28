@@ -9,12 +9,18 @@ from ..services.target_database import (
 )
 
 projects_bp = Blueprint('projects', __name__, url_prefix='/api')
-SessionLocal = init_db()
+_SessionLocal = None
+
+def _get_session():
+    global _SessionLocal
+    if _SessionLocal is None:
+        _SessionLocal = init_db()
+    return __get_session()
 
 @projects_bp.route('/projects', methods=['GET'])
 def list_projects():
     """列出所有项目"""
-    db = SessionLocal()
+    db = _get_session()
     try:
         projects = db.query(Project).order_by(Project.created_at.desc()).all()
         return jsonify({
@@ -46,7 +52,7 @@ def create_project():
     if target_name and not target_pdb:
         target_pdb = get_pdb_id_for_target(target_name)
     
-    db = SessionLocal()
+    db = _get_session()
     try:
         # P1修复: 检查项目名称是否已存在
         existing = db.query(Project).filter(Project.name == data['name']).first()
@@ -101,7 +107,7 @@ def batch_add_active_molecules(project_id):
     if not molecules:
         return jsonify({'success': False, 'error': '分子列表为空'}), 400
     
-    db = SessionLocal()
+    db = _get_session()
     try:
         p = db.query(Project).filter(Project.id == project_id).first()
         if not p:
@@ -181,7 +187,7 @@ def get_target_detail(target_name):
 @projects_bp.route('/projects/<int:project_id>', methods=['GET'])
 def get_project(project_id):
     """获取项目详情"""
-    db = SessionLocal()
+    db = _get_session()
     try:
         p = db.query(Project).filter(Project.id == project_id).first()
         if not p:
@@ -218,7 +224,7 @@ def get_project(project_id):
 def update_project(project_id):
     """更新项目"""
     data = request.get_json() or {}
-    db = SessionLocal()
+    db = _get_session()
     try:
         p = db.query(Project).filter(Project.id == project_id).first()
         if not p:
@@ -242,7 +248,7 @@ def update_project(project_id):
 @projects_bp.route('/projects/<int:project_id>', methods=['DELETE'])
 def delete_project(project_id):
     """删除项目（级联删除）"""
-    db = SessionLocal()
+    db = _get_session()
     try:
         p = db.query(Project).filter(Project.id == project_id).first()
         if not p:
@@ -265,7 +271,7 @@ def upload_active_molecules(project_id):
     if not molecules:
         return jsonify({'success': False, 'error': '分子列表为空'}), 400
     
-    db = SessionLocal()
+    db = _get_session()
     try:
         # 验证项目存在
         p = db.query(Project).filter(Project.id == project_id).first()

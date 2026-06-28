@@ -9,7 +9,13 @@ from ..services.utils import validate_smiles, canonicalize_smiles, save_molecule
 from ..config import MOLECULE_IMG_DIR
 
 molecules_bp = Blueprint('molecules', __name__, url_prefix='/api')
-SessionLocal = init_db()
+_SessionLocal = None
+
+def _get_session():
+    global _SessionLocal
+    if _SessionLocal is None:
+        _SessionLocal = init_db()
+    return __get_session()
 
 @molecules_bp.route('/projects/<int:project_id>/molecules', methods=['GET'])
 def list_molecules(project_id):
@@ -18,7 +24,7 @@ def list_molecules(project_id):
     page = int(request.args.get('page', 1))
     per_page = int(request.args.get('per_page', 20))
     
-    db = SessionLocal()
+    db = _get_session()
     try:
         query = db.query(GeneratedMolecule).filter(
             GeneratedMolecule.project_id == project_id
@@ -73,7 +79,7 @@ def list_molecules(project_id):
 @molecules_bp.route('/molecules/<int:molecule_id>', methods=['GET'])
 def get_molecule(molecule_id):
     """获取分子详情"""
-    db = SessionLocal()
+    db = _get_session()
     try:
         mol = db.query(GeneratedMolecule).filter(GeneratedMolecule.id == molecule_id).first()
         if not mol:
@@ -132,7 +138,7 @@ def get_molecule_svg(molecule_id):
         return send_from_directory(MOLECULE_IMG_DIR, f'{molecule_id}.svg')
     
     # 如果文件不存在，动态生成
-    db = SessionLocal()
+    db = _get_session()
     try:
         mol = db.query(GeneratedMolecule).filter(GeneratedMolecule.id == molecule_id).first()
         if not mol:
@@ -154,7 +160,7 @@ def create_molecule():
     if not canon:
         return jsonify({'success': False, 'error': 'SMILES无效'}), 400
     
-    db = SessionLocal()
+    db = _get_session()
     try:
         mol = GeneratedMolecule(
             project_id=project_id,
@@ -181,7 +187,7 @@ def batch_upload_molecules():
     if not smiles_list:
         return jsonify({'success': False, 'error': 'SMILES列表为空'}), 400
     
-    db = SessionLocal()
+    db = _get_session()
     try:
         added = 0
         for smi in smiles_list:
@@ -205,7 +211,7 @@ def batch_upload_molecules():
 @molecules_bp.route('/molecules/<int:molecule_id>', methods=['DELETE'])
 def delete_molecule(molecule_id):
     """删除分子"""
-    db = SessionLocal()
+    db = _get_session()
     try:
         mol = db.query(GeneratedMolecule).filter(GeneratedMolecule.id == molecule_id).first()
         if not mol:

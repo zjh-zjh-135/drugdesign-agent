@@ -26,9 +26,13 @@ from ..services.agent.tools import (
 )
 
 def get_db():
-    """获取数据库 session"""
-    Session = init_db()
-    return Session()
+    """获取数据库 session（P1修复: 延迟初始化，避免每次创建新engine）"""
+    from ..models.database import init_db
+    _SessionLocal = getattr(get_db, '_SessionLocal', None)
+    if _SessionLocal is None:
+        _SessionLocal = init_db()
+        get_db._SessionLocal = _SessionLocal
+    return _SessionLocal()
 
 
 def validate_project_id(project_id):

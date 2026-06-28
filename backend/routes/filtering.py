@@ -5,7 +5,13 @@ from ..models.database import init_db, GeneratedMolecule, MoleculeProperty
 from ..config import DEFAULT_THRESHOLDS
 
 filtering_bp = Blueprint('filtering', __name__, url_prefix='/api')
-SessionLocal = init_db()
+_SessionLocal = None
+
+def _get_session():
+    global _SessionLocal
+    if _SessionLocal is None:
+        _SessionLocal = init_db()
+    return __get_session()
 
 @filtering_bp.route('/molecules/pains', methods=['GET'])
 def get_pains_info():
@@ -25,7 +31,7 @@ def batch_filter():
     molecule_ids = data.get('molecule_ids', [])
     filter_params = data.get('filter_params', DEFAULT_THRESHOLDS)
     
-    db = SessionLocal()
+    db = _get_session()
     try:
         filter_engine = MoleculeFilter(filter_params)
         molecules = db.query(GeneratedMolecule).filter(

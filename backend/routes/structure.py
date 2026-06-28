@@ -4,7 +4,13 @@ from ..models.database import GeneratedMolecule, init_db
 from ..services.structure import get_molecule_structure, get_structure_info
 
 structure_bp = Blueprint('structure', __name__, url_prefix='/api')
-SessionLocal = init_db()
+_SessionLocal = None
+
+def _get_session():
+    global _SessionLocal
+    if _SessionLocal is None:
+        _SessionLocal = init_db()
+    return __get_session()
 
 
 @structure_bp.route('/molecules/<int:molecule_id>/structure', methods=['GET'])
@@ -12,7 +18,7 @@ def get_molecule_structure_endpoint(molecule_id):
     """获取分子3D结构（SDF/PDB/XYZ格式）"""
     format_type = request.args.get('format', 'sdf').lower()
     
-    db = SessionLocal()
+    db = _get_session()
     try:
         mol = db.query(GeneratedMolecule).filter(
             GeneratedMolecule.id == molecule_id
@@ -41,7 +47,7 @@ def get_molecule_structure_endpoint(molecule_id):
 @structure_bp.route('/molecules/<int:molecule_id>/structure3d', methods=['GET'])
 def get_molecule_structure3d(molecule_id):
     """获取分子3D结构信息和JSON格式坐标（供3Dmol.js使用）"""
-    db = SessionLocal()
+    db = _get_session()
     try:
         mol = db.query(GeneratedMolecule).filter(
             GeneratedMolecule.id == molecule_id

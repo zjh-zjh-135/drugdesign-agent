@@ -4,12 +4,18 @@ from ..models.database import init_db, GeneratedMolecule, AdmetPrediction, Molec
 from ..services.admet import AdmetPredictor
 
 admet_bp = Blueprint('admet', __name__, url_prefix='/api')
-SessionLocal = init_db()
+_SessionLocal = None
+
+def _get_session():
+    global _SessionLocal
+    if _SessionLocal is None:
+        _SessionLocal = init_db()
+    return __get_session()
 
 @admet_bp.route('/molecules/<int:molecule_id>/admet', methods=['GET'])
 def get_admet(molecule_id):
     """获取分子完整五分类ADMET预测"""
-    db = SessionLocal()
+    db = _get_session()
     try:
         mol = db.query(GeneratedMolecule).filter(GeneratedMolecule.id == molecule_id).first()
         if not mol:
@@ -61,7 +67,7 @@ def batch_admet():
     data = request.get_json() or {}
     molecule_ids = data.get('molecule_ids', [])
     
-    db = SessionLocal()
+    db = _get_session()
     try:
         predictor = AdmetPredictor()
         results = []

@@ -14,7 +14,13 @@ from ..config import MOLECULE_IMG_DIR
 import os
 
 generation_bp = Blueprint('generation', __name__, url_prefix='/api')
-SessionLocal = init_db()
+_SessionLocal = None
+
+def _get_session():
+    global _SessionLocal
+    if _SessionLocal is None:
+        _SessionLocal = init_db()
+    return __get_session()
 
 @generation_bp.route('/projects/<int:project_id>/generate', methods=['POST'])
 def generate_molecules(project_id):
@@ -31,7 +37,7 @@ def generate_molecules(project_id):
         'availability_threshold': data.get('availability_threshold', 0.5),
     }
     
-    db = SessionLocal()
+    db = _get_session()
     try:
         runner = PipelineRunner(SessionLocal, project_id, params)
         job_id = runner.run()
@@ -52,7 +58,7 @@ def apply_filter():
     molecule_ids = data.get('molecule_ids', [])
     filter_params = data.get('filter_params', {})
     
-    db = SessionLocal()
+    db = _get_session()
     try:
         from ..models.database import GeneratedMolecule, MoleculeProperty
         filter_engine = MoleculeFilter(filter_params)

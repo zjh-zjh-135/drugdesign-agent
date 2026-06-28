@@ -4,12 +4,18 @@ from sqlalchemy.orm import Session
 from ..models.database import AssayResult, GeneratedMolecule, ActiveMolecule, init_db
 
 assay_bp = Blueprint('assay', __name__, url_prefix='/api')
-SessionLocal = init_db()
+_SessionLocal = None
+
+def _get_session():
+    global _SessionLocal
+    if _SessionLocal is None:
+        _SessionLocal = init_db()
+    return __get_session()
 
 @assay_bp.route('/projects/<int:project_id>/assay_results', methods=['GET'])
 def list_assay_results(project_id):
     """列出项目所有实验验证记录"""
-    db = SessionLocal()
+    db = _get_session()
     try:
         results = db.query(AssayResult).filter(
             AssayResult.project_id == project_id
@@ -49,7 +55,7 @@ def create_assay_result(project_id):
     if predicted is not None and actual is not None and actual != 0:
         error_rate = abs(predicted - actual) / abs(actual)
     
-    db = SessionLocal()
+    db = _get_session()
     try:
         result = AssayResult(
             project_id=project_id,
@@ -81,7 +87,7 @@ def create_assay_result(project_id):
 def update_assay_result(assay_id):
     """更新实验结果（填入实测值）"""
     data = request.get_json() or {}
-    db = SessionLocal()
+    db = _get_session()
     try:
         r = db.query(AssayResult).filter(AssayResult.id == assay_id).first()
         if not r:
@@ -111,7 +117,7 @@ def update_assay_result(assay_id):
 @assay_bp.route('/assay_results/<int:assay_id>/feedback', methods=['POST'])
 def apply_feedback(assay_id):
     """数据回流：将实验验证结果加入已知活性分子库"""
-    db = SessionLocal()
+    db = _get_session()
     try:
         r = db.query(AssayResult).filter(AssayResult.id == assay_id).first()
         if not r:
@@ -154,7 +160,7 @@ def apply_feedback(assay_id):
 @assay_bp.route('/projects/<int:project_id>/feedback_stats', methods=['GET'])
 def get_feedback_stats(project_id):
     """获取数据回流统计"""
-    db = SessionLocal()
+    db = _get_session()
     try:
         total = db.query(AssayResult).filter(AssayResult.project_id == project_id).count()
         completed = db.query(AssayResult).filter(

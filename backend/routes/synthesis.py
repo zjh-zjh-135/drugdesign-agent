@@ -5,7 +5,13 @@ from ..models.database import init_db, GeneratedMolecule, SynthesisRoute
 from ..services.synthesis import SynthesisAnalyzer, generate_route_structures
 
 synthesis_bp = Blueprint('synthesis', __name__, url_prefix='/api')
-SessionLocal = init_db()
+_SessionLocal = None
+
+def _get_session():
+    global _SessionLocal
+    if _SessionLocal is None:
+        _SessionLocal = init_db()
+    return __get_session()
 
 
 @synthesis_bp.route('/synthesis/analyze', methods=['POST'])
@@ -71,7 +77,7 @@ def analyze_synthesis_from_smiles():
 @synthesis_bp.route('/molecules/<int:molecule_id>/synthesis', methods=['POST'])
 def analyze_synthesis(molecule_id):
     """启动逆合成分析"""
-    db = SessionLocal()
+    db = _get_session()
     try:
         mol = db.query(GeneratedMolecule).filter(GeneratedMolecule.id == molecule_id).first()
         if not mol:

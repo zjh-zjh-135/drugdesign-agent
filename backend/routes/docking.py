@@ -5,7 +5,13 @@ from ..models.database import GeneratedMolecule, Project, init_db
 from ..services.docking import run_docking, batch_docking
 
 docking_bp = Blueprint('docking', __name__, url_prefix='/api')
-SessionLocal = init_db()
+_SessionLocal = None
+
+def _get_session():
+    global _SessionLocal
+    if _SessionLocal is None:
+        _SessionLocal = init_db()
+    return __get_session()
 
 
 @docking_bp.route('/molecules/<int:molecule_id>/dock', methods=['POST'])
@@ -13,7 +19,7 @@ def dock_molecule(molecule_id):
     """对单个分子进行对接"""
     data = request.get_json() or {}
     
-    db = SessionLocal()
+    db = _get_session()
     try:
         mol = db.query(GeneratedMolecule).filter(
             GeneratedMolecule.id == molecule_id
