@@ -13,6 +13,8 @@ import re
 import time
 from typing import Dict, Any, List, Optional
 
+from .llm_client import LLMCallError
+
 import requests
 
 logger = logging.getLogger(__name__)
@@ -371,11 +373,10 @@ class TaskPlanner:
 
     def _call_llm(self, messages: List[Dict[str, str]]) -> Optional[str]:
         """调用 LLM（委托给 LLMClient，带重试）。"""
-        result = self.llm.retry_call(messages, temperature=self.temperature, max_retries=2, base_delay=0.5)
-        # 如果返回错误消息，则视为调用失败
-        if result.startswith("LLM 调用失败"):
+        try:
+            return self.llm.retry_call(messages, temperature=self.temperature, max_retries=2, base_delay=0.5)
+        except LLMCallError:
             return None
-        return result
 
     # ------------------------------------------------------------------
     # Parsing

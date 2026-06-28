@@ -41,6 +41,15 @@ logger = logging.getLogger(__name__)
 
 
 # ============================================================================
+# 异常定义
+# ============================================================================
+
+class LLMCallError(Exception):
+    """LLM调用失败异常，替代脆弱的字符串匹配判断"""
+    pass
+
+
+# ============================================================================
 # 数据模型
 # ============================================================================
 
@@ -242,7 +251,8 @@ class LLMClient:
             if tracer and step:
                 step.finish(error=error_msg)
             
-            return error_msg
+            # P1修复: 抛出异常替代脆弱的字符串匹配
+            raise LLMCallError(error_msg) from e
     
     def retry_call(
         self,
@@ -263,26 +273,26 @@ class LLMClient:
         last_error = ""
         
         for attempt in range(max_retries + 1):
-            result = self.call(messages, temperature, **kwargs)
-            
-            # 检查是否成功
-            if not result.startswith("LLM 调用失败"):
+            try:
+                result = self.call(messages, temperature, **kwargs)
                 return result
-            
-            # 解析错误类型，判断是否可重试
-            is_retryable = self._is_retryable_error(result)
-            if not is_retryable or attempt >= max_retries:
-                return result
-            
-            # 指数退避等待
-            delay = base_delay * (2 ** attempt)
-            if "SSL" in result or "连接" in result:
-                delay += 1.0
-            logger.warning(f"LLM 调用失败，第 {attempt + 1} 次重试，等待 {delay:.1f}s...")
-            time.sleep(delay)
-            last_error = result
+            except LLMCallError as e:
+                error_msg = str(e)
+                
+                # 解析错误类型，判断是否可重试
+                is_retryable = self._is_retryable_error(error_msg)
+                if not is_retryable or attempt >= max_retries:
+                    raise
+                
+                # 指数退避等待
+                delay = base_delay * (2 ** attempt)
+                if "SSL" in error_msg or "连接" in error_msg:
+                    delay += 1.0
+                logger.warning(f"LLM 调用失败，第 {attempt + 1} 次重试，等待 {delay:.1f}s...")
+                time.sleep(delay)
+                last_error = error_msg
         
-        return last_error
+        raise LLMCallError(f"重试耗尽，最后错误: {last_error}")
     
     def cached_call(
         self,
@@ -303,17 +313,17 @@ class LLMClient:
             return entry.response
         
         # 缓存未命中，执行调用（使用 retry_call 增强稳定性）
-        result = self.retry_call(messages, temperature, **kwargs)
+        try:
+            result = self.retry_call(messages, temperature, **kwargs)
+        except LLMCallError:
+            raise  # 不缓存错误结果，直接向上传播
         
         # 存入缓存（只缓存成功结果）
-        if not result.startswith("LLM 调用失败"):
-            self._cache[cache_key] = CacheEntry(
-                response=result,
-                timestamp=datetime.now(),
-                ttl_seconds=cache_ttl,
-            )
-        
-        return result
+        self._cache[cache_key] = CacheEntry(
+            response=result,
+            timestamp=datetime.now(),
+            ttl_seconds=cache_ttl,
+        )
     
     def stream_call(
         self,
