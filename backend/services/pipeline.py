@@ -1,3 +1,6 @@
+import logging
+
+logger = logging.getLogger(__name__)
 """Pipeline编排器 - 串联8层药物设计流程"""
 import threading
 import time
@@ -123,7 +126,8 @@ class PipelineRunner:
             if self._db:
                 try:
                     self._db.close()
-                except Exception:
+                except Exception as e:
+                    logger.exception(f'Pipeline错误: {e}')
                     pass
                 self._db = None
     
@@ -165,6 +169,7 @@ class PipelineRunner:
                 if count > 0:
                     self._log(f"清理 {count} 个历史生成分子")
         except Exception as e:
+            logger.exception(f'Pipeline错误: {e}')
             self._db.rollback()
             self._log(f"清理历史数据失败: {e}")
     
@@ -185,7 +190,8 @@ class PipelineRunner:
             if prop:
                 prop.failure_stage = stage_name
                 prop.failure_reason = json.dumps(reasons_dict, ensure_ascii=False, default=str)
-        except Exception:
+        except Exception as e:
+            logger.exception(f'Pipeline错误: {e}')
             pass
 
     def _stage_input(self):
@@ -230,7 +236,8 @@ class PipelineRunner:
                     failed_smiles = [m.smiles for m in failed_molecules]
                     if failed_smiles:
                         self._log(f"已加载 {len(failed_smiles)} 个历史失败分子用于迭代学习")
-                except Exception:
+                except Exception as e:
+                    logger.exception(f'Pipeline错误: {e}')
                     pass
             
             generator = MoleculeGenerator()
@@ -279,7 +286,8 @@ class PipelineRunner:
                                 'pass_filters': desc.get('pass_filters')
                             }
                         })
-                except Exception:
+                except Exception as e:
+                    logger.exception(f'Pipeline错误: {e}')
                     failed_count += 1
                     self._record_failure(mol, 'filtering', {
                         'reason': '过滤计算异常',
@@ -290,6 +298,7 @@ class PipelineRunner:
             self.stats['failed_filtering'] = failed_count
             self._log(f"过滤后通过 {passed_count}/{len(molecules)} 个分子，失败 {failed_count} 个")
         except Exception as e:
+            logger.exception(f'Pipeline错误: {e}')
             self._db.rollback()
             self._log(f"过滤层失败: {e}")
             self.stats['filtered'] = 0
@@ -383,7 +392,8 @@ class PipelineRunner:
                                 'mw': round(mw, 1)
                             }
                         })
-                except Exception:
+                except Exception as e:
+                    logger.exception(f'Pipeline错误: {e}')
                     failed_count += 1
                     self._record_failure(mol, 'structure_screening', {
                         'reason': '结构筛选计算异常',
@@ -394,6 +404,7 @@ class PipelineRunner:
             self.stats['failed_structure_screening'] = failed_count
             self._log(f"结构筛选后通过 {passed_count}/{len(molecules)} 个分子，失败 {failed_count} 个")
         except Exception as e:
+            logger.exception(f'Pipeline错误: {e}')
             self._db.rollback()
             self._log(f"结构筛选层失败: {e}")
             self.stats['structure_screened'] = 0
@@ -451,7 +462,8 @@ class PipelineRunner:
                                 'bbb': admet.get('bbb')
                             }
                         })
-                except Exception:
+                except Exception as e:
+                    logger.exception(f'Pipeline错误: {e}')
                     failed_count += 1
                     self._record_failure(mol, 'admet', {
                         'reason': 'ADMET预测异常',
@@ -463,6 +475,7 @@ class PipelineRunner:
             self.stats['failed_admet'] = failed_count
             self._log(f"ADMET预测后通过 {passed_count}/{len(molecules)} 个分子，失败 {failed_count} 个")
         except Exception as e:
+            logger.exception(f'Pipeline错误: {e}')
             self._db.rollback()
             self._log(f"ADMET层失败: {e}")
             self.stats['admet_passed'] = 0
@@ -493,7 +506,8 @@ class PipelineRunner:
                             (1 - prop.sa_score / 10) * 0.2
                         ) * 100
                         scored.append((mol.id, score, mol, prop, admet))
-                except Exception:
+                except Exception as e:
+                    logger.exception(f'Pipeline错误: {e}')
                     continue
             scored.sort(key=lambda x: x[1], reverse=True)
             top_n = self.params.get('top_n', 200)
@@ -521,6 +535,7 @@ class PipelineRunner:
             self.stats['failed_refinement'] = failed_count
             self._log(f"精筛后保留 Top {len(top_ids)} 个分子，淘汰 {failed_count} 个")
         except Exception as e:
+            logger.exception(f'Pipeline错误: {e}')
             self._db.rollback()
             self._log(f"精筛层失败: {e}")
             self.stats['refined'] = 0
@@ -561,7 +576,8 @@ class PipelineRunner:
                                 'num_groups': analysis.get('num_groups')
                             }
                         })
-                except Exception:
+                except Exception as e:
+                    logger.exception(f'Pipeline错误: {e}')
                     failed_count += 1
                     self._record_failure(mol, 'synthesis', {
                         'reason': '合成分析异常',
@@ -572,6 +588,7 @@ class PipelineRunner:
             self.stats['failed_synthesis'] = failed_count
             self._log(f"合成分析后通过 {passed_count} 个分子，失败 {failed_count} 个")
         except Exception as e:
+            logger.exception(f'Pipeline错误: {e}')
             self._db.rollback()
             self._log(f"合成层失败: {e}")
             self.stats['synthesis_passed'] = 0
@@ -594,7 +611,8 @@ class PipelineRunner:
                     filepath = os.path.join(MOLECULE_IMG_DIR, f'{mol.id}.svg')
                     from .utils import save_molecule_svg
                     save_molecule_svg(mol.smiles, filepath)
-                except Exception:
+                except Exception as e:
+                    logger.exception(f'Pipeline错误: {e}')
                     pass
             
             self.stats['final'] = len(final_molecules)
@@ -618,6 +636,7 @@ class PipelineRunner:
                 self.pipeline_run.num_failed = total_failed
                 self._db.commit()
         except Exception as e:
+            logger.exception(f'Pipeline错误: {e}')
             self._db.rollback()
             self._log(f"输出层失败: {e}")
     
@@ -636,11 +655,13 @@ class PipelineRunner:
                     pipeline_status=status
                 )
                 self._db.add(mol)
-            except Exception:
+            except Exception as e:
+                logger.exception(f'Pipeline错误: {e}')
                 continue
         try:
             self._db.commit()
-        except Exception:
+        except Exception as e:
+            logger.exception(f'Pipeline错误: {e}')
             self._db.rollback()
     
     def _save_properties(self, molecule_id: int, desc: Dict, pass_filter: bool):
@@ -661,7 +682,8 @@ class PipelineRunner:
                 pass_filters=pass_filter,
             )
             self._db.add(prop)
-        except Exception:
+        except Exception as e:
+            logger.exception(f'Pipeline错误: {e}')
             pass
     
     def _save_admet(self, molecule_id: int, admet: Dict):
@@ -681,7 +703,8 @@ class PipelineRunner:
                 overall_score=admet.get('overall_score'),
             )
             self._db.add(pred)
-        except Exception:
+        except Exception as e:
+            logger.exception(f'Pipeline错误: {e}')
             pass
     
     def _save_synthesis(self, molecule_id: int, result: Dict):
@@ -697,7 +720,8 @@ class PipelineRunner:
                 status=result.get('status', 'pending')
             )
             self._db.add(route)
-        except Exception:
+        except Exception as e:
+            logger.exception(f'Pipeline错误: {e}')
             pass
     
     @classmethod
@@ -754,5 +778,6 @@ class PipelineRunner:
                     'svg_url': f'/static/molecules/{mol.id}.svg'
                 })
             return results
-        except Exception:
+        except Exception as e:
+            logger.exception(f'Pipeline错误: {e}')
             return []

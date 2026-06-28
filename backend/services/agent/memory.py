@@ -53,13 +53,20 @@ def get_conversation_history(db, session_id: str, limit: int = 20, max_tokens: i
     
     result = []
     total_chars = 0
-    # 简单估算：每字符约 0.5 token（混合中英文）
+    # P0修复: 更保守的token估算（中文每字符约1-2token，混合文本取0.8）
+    CHARS_PER_TOKEN = 0.8
+    
     for m in messages:
-        content_len = len(m.content) if m.content else 0
+        content = m.content or ""
+        # 对超长单条消息强制截断（防止单条消息撑爆上下文）
+        if len(content) > 2000:
+            content = content[:2000] + "...（内容已截断）"
+            m.content = content
+        content_len = len(content)
         total_chars += content_len
     
     # 如果超出预算，对早期消息做摘要而非丢弃
-    estimated_tokens = total_chars * 0.5
+    estimated_tokens = int(total_chars * CHARS_PER_TOKEN)
     if estimated_tokens > max_tokens and len(messages) > 5:
         # 保留最近 5 条完整，对早期消息做摘要
         recent = messages[-5:]
