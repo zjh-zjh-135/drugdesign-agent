@@ -11,7 +11,7 @@ Base = declarative_base()
 class Project(Base):
     __tablename__ = 'projects'
     id = Column(Integer, primary_key=True, autoincrement=True)
-    name = Column(String(200), nullable=False)
+    name = Column(String(200), nullable=False, unique=True)
     target_name = Column(String(200))
     target_pdb = Column(String(20))
     description = Column(Text)

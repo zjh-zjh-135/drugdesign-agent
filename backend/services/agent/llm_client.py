@@ -27,6 +27,7 @@ import os
 import time
 import hashlib
 import logging
+import threading
 from typing import Dict, Any, List, Optional, Iterator
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -113,6 +114,7 @@ class LLMClient:
         self._last_call_time: float = 0.0
         self._cache: Dict[str, CacheEntry] = {}
         self.metrics = LLMMetrics()
+        self._metrics_lock = threading.Lock()  # P1修复: 保护metrics非原子更新
         
         # ── LangChain ChatOpenAI 实例（兼容 Moonshot）──
         # Moonshot API 是 OpenAI 兼容格式，使用 openai 包 + base_url
@@ -432,15 +434,16 @@ class LLMClient:
         completion_tokens: int = 0,
         error: bool = False,
     ) -> None:
-        """更新指标。"""
-        self.metrics.total_calls += 1
-        self.metrics.total_latency_ms += latency_ms
-        self.metrics.prompt_tokens += prompt_tokens
-        self.metrics.completion_tokens += completion_tokens
-        self.metrics.total_tokens += prompt_tokens + completion_tokens
-        
-        if error:
-            self.metrics.total_errors += 1
+        """更新指标（P1修复: 线程锁保护非原子操作）。"""
+        with self._metrics_lock:
+            self.metrics.total_calls += 1
+            self.metrics.total_latency_ms += latency_ms
+            self.metrics.prompt_tokens += prompt_tokens
+            self.metrics.completion_tokens += completion_tokens
+            self.metrics.total_tokens += prompt_tokens + completion_tokens
+            
+            if error:
+                self.metrics.total_errors += 1
     
     def _make_cache_key(
         self,

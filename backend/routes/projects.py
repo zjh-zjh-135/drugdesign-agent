@@ -48,6 +48,11 @@ def create_project():
     
     db = SessionLocal()
     try:
+        # P1修复: 检查项目名称是否已存在
+        existing = db.query(Project).filter(Project.name == data['name']).first()
+        if existing:
+            return jsonify({'success': False, 'error': f'项目"{data["name"]}"已存在'}), 409
+        
         project = Project(
             name=data['name'],
             target_name=target_name,
