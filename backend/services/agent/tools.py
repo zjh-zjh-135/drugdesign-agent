@@ -926,14 +926,14 @@ def _build_wait_result(db, pipeline_run, project_id, elapsed, completed):
     "端到端运行药物发现全流程：从靶点名称到候选分子。自动获取PDB ID、创建项目、添加已知活性分子、运行Pipeline、等待完成并返回Top候选分子。适合一键式完成从靶点到候选分子的完整流程。",
     {
         "target_name": {"type": "string", "description": "靶点名称（如HER2、EGFR、VEGFR2、AKT1、BRAF等）", "required": True},
-        "num_molecules": {"type": "integer", "description": "生成分子数量，默认50", "required": False, "default": 50},
+        "num_molecules": {"type": "integer", "description": "生成分子数量，默认1000", "required": False, "default": 1000},
         "similarity_threshold": {"type": "number", "description": "相似度阈值（0.0-1.0），默认0.3", "required": False, "default": 0.3},
         "admet_threshold": {"type": "number", "description": "ADMET综合阈值（0-100），默认60", "required": False, "default": 60},
         "availability_threshold": {"type": "number", "description": "合成可及性阈值（0.0-1.0），默认0.35", "required": False, "default": 0.35},
         "limit": {"type": "integer", "description": "返回Top候选分子数量，默认3", "required": False, "default": 3}
     }
 )
-def run_full_pipeline(target_name: str, num_molecules: int = 50, 
+def run_full_pipeline(target_name: str, num_molecules: int = 1000, 
                        similarity_threshold: float = 0.3, admet_threshold: float = 60,
                        availability_threshold: float = 0.35, limit: int = 3) -> Dict:
     """
